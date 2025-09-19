@@ -1,0 +1,16 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "extensionHost",
+			"request": "launch",
+			"name": "Launchh Client",
+			"runtimeExecutable": "${execPath}",
+			"args": ["--extensionDevelopmentPath=${workspaceRoot}"],
+			"outFiles": [
+				"${workspaceRoot}/vscode-client/out/*",
+			],
+			"autoAttachChildProcesses": true,
+        }
+	]
+}

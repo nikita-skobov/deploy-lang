@@ -1,0 +1,59 @@
+{
+	"name": "dcl-language-server",
+	"description": "VSCode part of a language server",
+	"repository": {
+		"url": "https://github.com/nikita-skobov/sqlerverless"
+	},
+	"keywords": [
+		"dcl",
+		"language-server",
+		"dcl-language-server",
+		"dcl-lsp"
+  	],
+	"license": "MIT",
+	"version": "0.0.1",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"dependencies": {
+		"glob": "^11.0.0",
+		"vscode-languageclient": "^9.0.1"
+	},
+	"activationEvents": [
+		"workspaceContains:*.dcl"
+  	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "dcl",
+				"extensions": [".dcl"],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "dcl",
+				"scopeName": "source.dcl",
+				"path": "dcl.tmLanguage.json"
+			}
+		]
+	},
+	"main": "./out/extension",
+	"scripts": {
+		"compile": "tsc -b",
+		"build-rs": "cargo build -p language_server && cp ../target/debug/language_server ./out/",
+		"build": "npm run compile && npm run build-rs"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.13.0",
+		"@stylistic/eslint-plugin": "^2.9.0",
+		"@types/mocha": "^10.0.6",
+		"@types/node": "^22.18.6",
+		"@types/vscode": "^1.85.0",
+		"@vscode/test-electron": "^2.3.9",
+		"eslint": "^9.13.0",
+		"mocha": "^10.3.0",
+		"typescript": "^5.9.2",
+		"typescript-eslint": "^8.39.0"
+	}
+}
