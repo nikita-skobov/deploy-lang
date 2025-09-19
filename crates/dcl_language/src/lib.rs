@@ -40,14 +40,48 @@ pub struct Section<'a> {
     pub body: Vec<&'a str>,
 }
 
-pub fn parse_document_to_sections<'a>(document: &'a str) -> Result<Vec<Section<'a>>, String> {
+#[derive(Default, Debug)]
+pub struct Position {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Default, Debug)]
+pub struct Span {
+    pub start: Position,
+    pub end: Position,
+}
+
+#[derive(Default, Debug)]
+pub struct SpannedDiagnostic {
+    pub span: Span,
+    pub severity: u32,
+    pub message: String,
+}
+
+impl PartialEq<&str> for SpannedDiagnostic {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+
+pub fn parse_document_to_sections<'a>(document: &'a str) -> Result<Vec<Section<'a>>, SpannedDiagnostic> {
     let mut out = vec![];
     let mut lines: Lines<'a> = document.lines();
+    let mut line_index = 0;
     while let Some(line) = lines.next() {
+        line_index += 1;
         if line.is_empty() { continue; }
         if line.starts_with(|c: char| c.is_ascii_alphabetic()) {
             // start of section: parse it
-            let section = parse_section_starting_with_line(line, &mut lines)?;
+            let section = match parse_section_starting_with_line(line, &mut lines) {
+                Ok(o) => o,
+                Err(e) => {
+                    let mut diag = SpannedDiagnostic::default();
+                    diag.message = e;
+                    return Err(diag)
+                }
+            };
             out.push(section);
             continue;
         }
@@ -59,7 +93,13 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Result<Vec<Section<'
             None => true,
         };
         if is_invalid {
-            return Err(format!("invalid line '{}' must be a section or a comment", line));
+            let mut diag = SpannedDiagnostic::default();
+            diag.span.start.line = line_index;
+            diag.span.end.line = line_index;
+            diag.span.start.column = 0;
+            diag.span.end.column = line.len();
+            diag.message = format!("invalid line '{}' must be a section or a comment", line);
+            return Err(diag);
         }
         // otherwise its a line with a comment. can be ignored
     }
