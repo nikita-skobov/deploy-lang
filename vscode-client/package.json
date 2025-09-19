@@ -2,7 +2,7 @@
 	"name": "dcl-language-server",
 	"description": "VSCode part of a language server",
 	"repository": {
-		"url": "https://github.com/nikita-skobov/sqlerverless"
+		"url": "https://github.com/nikita-skobov/declarative-cli"
 	},
 	"keywords": [
 		"dcl",
