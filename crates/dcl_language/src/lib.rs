@@ -6,7 +6,7 @@
 //! part of the section body as long as they have the same number of indentation characters.
 //! 
 
-use std::str::Lines;
+use std::{iter::Peekable, str::Lines};
 
 pub const COMMENT_CHAR: char = '#';
 
@@ -65,9 +65,20 @@ impl PartialEq<&str> for SpannedDiagnostic {
     }
 }
 
+pub fn consume_until_empty<'a>(lines: &mut Peekable<Lines<'a>>) -> Option<()> {
+    loop {
+        let line = lines.peek()?;
+        if line.is_empty() {
+            break;
+        }
+        lines.next();
+    }
+    None
+}
+
 pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
     let mut out = vec![];
-    let mut lines: Lines<'a> = document.lines();
+    let mut lines: Peekable<Lines<'a>> = document.lines().peekable();
     let mut line_index = 0;
     while let Some(line) = lines.next() {
         line_index += 1;
@@ -80,6 +91,9 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
                     let mut diag = SpannedDiagnostic::default();
                     diag.message = e;
                     out.push(Err(diag));
+                    // must advance lines til next section, otherwise will get
+                    // unnecessary errors re-parsing the same section from the middle
+                    consume_until_empty(&mut lines);
                     continue;
                 }
             };
@@ -109,7 +123,7 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
 
 pub fn parse_section_starting_with_line<'a>(
     first_line: &'a str,
-    next_lines: &mut Lines<'a>,
+    next_lines: &mut Peekable<Lines<'a>>,
 ) -> Result<Section<'a>, String> {
     // a section must start with a type
     // a type can be optionally followed by parameters
@@ -225,7 +239,7 @@ pub fn parse_section_body<'a>(
     indentation_char: IndentaionCharacter,
     indentation_count: usize,
     first_body_line: &'a str,
-    next_lines: &mut Lines<'a>,
+    next_lines: &mut Peekable<Lines<'a>>,
 ) -> Result<Vec<&'a str>, String> {
     let mut body = vec![];
     let invalid_utf8_err = format!("invalid utf8 sequence from {}..", indentation_count);
@@ -315,6 +329,29 @@ mod test {
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 2);
         assert_eq!(section.body, vec!["something here", "123"]);
+        let section = sections.remove(0).expect("should be a valid document");
+        assert_eq!(section.typ, "sectionC");
+        assert_eq!(section.parameters, None);
+        assert_eq!(section.indentation_char.as_character(), '\t');
+        assert_eq!(section.indentation_count, 1);
+        assert_eq!(section.body, vec!["a", "c", "b"]);
+        assert_eq!(sections.len(), 0);
+    }
+
+    #[test]
+    fn can_parse_err_and_keep_going() {
+        let document = 
+            "sectionA\n   e\n   b\n\nsectionB\n  something\n onlyonespace\n  123\n\nsectionC\n\ta\n\tc\n\tb\n\n\n\n";
+        let mut sections = parse_document_to_sections(document);
+        assert_eq!(sections.len(), 3);
+        let section = sections.remove(0).expect("should be a valid document");
+        assert_eq!(section.typ, "sectionA");
+        assert_eq!(section.parameters, None);
+        assert_eq!(section.indentation_char.as_character(), ' ');
+        assert_eq!(section.indentation_count, 3);
+        assert_eq!(section.body, vec!["e", "b"]);
+        let err = sections.remove(0).expect_err("should be an error");
+        assert_eq!(err, "body must start with 2 characters of ' '");
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionC");
         assert_eq!(section.parameters, None);
