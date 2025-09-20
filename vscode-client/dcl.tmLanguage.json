@@ -57,6 +57,11 @@
       "name": "meta.structure.array.json",
       "patterns": [
         {
+          "comment": "jsonpath selector. TODO: the closing bracket breaks the array syntax highlighting...",
+          "match": "\\$\\.\\.?[\\w\\.\\[\\']*",
+          "name": "storage.modifier.dcl"
+        },
+        {
           "include": "#jsonvalue"
         },
         {
@@ -114,7 +119,7 @@
             {
               "comment": "jsonpath selector",
               "match": "\\$\\.\\.?[\\w\\.\\[\\]\\']*",
-              "name": "variable.language.dcl"
+              "name": "storage.modifier.dcl"
             },
             {
               "comment": "the JSON object value",
