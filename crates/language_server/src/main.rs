@@ -48,7 +48,7 @@ fn main() {
 /// then they fixed them, this should return an empty vec of diagnostics, causing the client
 /// to remove past errors
 fn generate_diagnostics_from_current_document<'a>(document: &'a str) -> Vec<Diagnostic> {
-    let sections = dcl_language::parse_document_to_sections(document);
+    let sections = dcl_language::parse::parse_document_to_sections(document);
     let mut out = vec![];
     for section in sections {
         if let Err(e) = section {
