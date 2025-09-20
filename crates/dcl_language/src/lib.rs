@@ -56,11 +56,21 @@ pub struct Span {
     pub end: Position,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct SpannedDiagnostic {
     pub span: Span,
     pub severity: u32,
     pub message: String,
+}
+
+impl Default for SpannedDiagnostic {
+    fn default() -> Self {
+        Self {
+            span: Default::default(),
+            severity: 3, // default to error
+            message: Default::default()
+        }
+    }
 }
 
 impl SpannedDiagnostic {
@@ -140,6 +150,7 @@ pub fn parse_section_starting_with_line<'a>(
     first_line: &'a str,
     next_lines: &mut PeekableLineCount<Lines<'a>>,
 ) -> Result<Section<'a>, SpannedDiagnostic> {
+    let line_index = next_lines.last_line_index();
     // a section must start with a type
     // a type can be optionally followed by parameters
     let (typ, parameters) = match first_line.split_once(' ') {
@@ -149,13 +160,11 @@ pub fn parse_section_starting_with_line<'a>(
     // a type must be ascii alphanumeric characters
     // and whose first character must be alphabetic:
     if !typ.starts_with(|c: char| c.is_ascii_alphabetic()) {
-        let line_index = next_lines.line_index();
         let err = format!("invalid section type '{}': must start with ascii alphabetic character", typ);
         let diag = SpannedDiagnostic::new(err, line_index, typ.len());
         return Err(diag);
     }
     if !typ.chars().all(|c| c.is_ascii_alphanumeric()) {
-        let line_index = next_lines.line_index();
         let err = format!("invalid section type '{}': must only contain ascii alphanumeric characters", typ);
         let diag = SpannedDiagnostic::new(err, line_index, typ.len());
         return Err(diag);
@@ -200,7 +209,7 @@ pub fn parse_section_starting_with_line<'a>(
                 typ, parameters_debug,
                 c
             );
-            let diag = SpannedDiagnostic::new(err, next_lines.line_index(), 1);
+            let diag = SpannedDiagnostic::new(err, next_lines.last_line_index(), 1);
             return Err(diag)
         }
     };
@@ -220,7 +229,7 @@ pub fn parse_section_starting_with_line<'a>(
                     indentation_char.as_debug(),
                     c_debug,
                 );
-                let diag = SpannedDiagnostic::new(err, next_lines.line_index(), indentation_count);
+                let diag = SpannedDiagnostic::new(err, next_lines.last_line_index(), indentation_count);
                 return Err(diag);
             }
             break;
