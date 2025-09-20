@@ -65,7 +65,7 @@ impl PartialEq<&str> for SpannedDiagnostic {
     }
 }
 
-pub fn parse_document_to_sections<'a>(document: &'a str) -> Result<Vec<Section<'a>>, SpannedDiagnostic> {
+pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
     let mut out = vec![];
     let mut lines: Lines<'a> = document.lines();
     let mut line_index = 0;
@@ -79,10 +79,11 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Result<Vec<Section<'
                 Err(e) => {
                     let mut diag = SpannedDiagnostic::default();
                     diag.message = e;
-                    return Err(diag)
+                    out.push(Err(diag));
+                    continue;
                 }
             };
-            out.push(section);
+            out.push(Ok(section));
             continue;
         }
         // must be a comment, parse and validate its a valid comment (#)
@@ -99,11 +100,11 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Result<Vec<Section<'
             diag.span.start.column = 0;
             diag.span.end.column = line.len();
             diag.message = format!("invalid line '{}' must be a section or a comment", line);
-            return Err(diag);
+            out.push(Err(diag));
         }
         // otherwise its a line with a comment. can be ignored
     }
-    Ok(out)
+    out
 }
 
 pub fn parse_section_starting_with_line<'a>(
@@ -251,154 +252,171 @@ mod test {
     #[test]
     fn can_parse_single_sections_eof() {
         let document = "sectionA\n   e\n   b";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
         assert_eq!(sections.len(), 1);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
-        assert_eq!(section.body, vec!["e", "b"])
+        assert_eq!(section.body, vec!["e", "b"]);
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn section_body_doesnt_include_comments() {
         let document = "sectionA\n   #this is a comment\n   e # this is a comment\n   b";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
         assert_eq!(sections.len(), 1);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
-        assert_eq!(section.body, vec!["e ", "b"])
+        assert_eq!(section.body, vec!["e ", "b"]);
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn comments_between_sections_ignored() {
         let document = "#comment a b c\nsectionA\n\ta\n\n# another comment\n\nsectionB\n\tb\n";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
         assert_eq!(sections.len(), 2);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["a"]);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionB");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["b"]);
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn can_parse_multiple_sections() {
         let document = 
             "sectionA\n   e\n   b\n\nsectionB parameter\n  something here\n  123\n\nsectionC\n\ta\n\tc\n\tb\n\n\n\n";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
         assert_eq!(sections.len(), 3);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e", "b"]);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionB");
         assert_eq!(section.parameters, Some("parameter"));
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 2);
         assert_eq!(section.body, vec!["something here", "123"]);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionC");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["a", "c", "b"]);
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn can_parse_multiple_sections_with_empty_bodies() {
         let document = 
             "sectionA\n\nsectionB parameter(1 2 3)\n\nsectionC";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
         assert_eq!(sections.len(), 3);
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_count, 0);
         assert!(section.body.is_empty());
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionB");
         assert_eq!(section.parameters, Some("parameter(1 2 3)"));
         assert_eq!(section.indentation_count, 0);
         assert!(section.body.is_empty());
-        let section = sections.remove(0);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionC");
         assert_eq!(section.parameters, None);
         assert_eq!(section.indentation_count, 0);
         assert!(section.body.is_empty());
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn sections_require_empty_line_between() {
         let document = "sectionA\nsectionB\n\n";
-        let err = parse_document_to_sections(document).expect_err("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
+        let err = sections.remove(0).expect_err("should be a valid document");
         // TODO: this error message should probably say "multiple sections must be separated by an empty line"
         assert_eq!(err, "section body of 'sectionA' has invalid starting character 's' must be a space or a tab");
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn section_types_must_start_with_alphabetic_characters() {
         let document = "1sectionA\n\n";
-        let err = parse_document_to_sections(document).expect_err("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
+        let err = sections.remove(0).expect_err("should be a valid document");
         // TODO: this error message should say something about "sections must start with alphabetic ascii character"
         assert_eq!(err, "invalid line '1sectionA' must be a section or a comment");
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn section_types_must_be_alphanumeric() {
         let document = "sec❤️tionA\n\n";
-        let err = parse_document_to_sections(document).expect_err("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
+        let err = sections.remove(0).expect_err("should be a valid document");
         // TODO: this error message should say something about "sections must start with alphabetic ascii character"
         assert_eq!(err, "invalid section type 'sec❤️tionA': must only contain ascii alphanumeric characters");
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn section_params_can_be_non_ascii() {
         let document = "sectionA ❤️\n\n";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
-        let section = sections.remove(0);
+        let mut sections = parse_document_to_sections(document);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.parameters.unwrap(), "❤️");
         assert!(section.body.is_empty());
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn body_can_contain_non_ascii() {
         let document = "sectionA\n\t\t❤️ hello\n\t\tsomething#❤️\n";
-        let mut sections = parse_document_to_sections(document).expect("should be a valid document");
-        let section = sections.remove(0);
+        let mut sections = parse_document_to_sections(document);
+        let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 2);
         assert_eq!(section.parameters, None);
         assert_eq!(section.body, vec!["❤️ hello", "something"]);
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn sections_body_cant_mix_match_indent_character() {
         let document = "sectionA\n\t\t a";
-        let err = parse_document_to_sections(document).expect_err("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
+        let err = sections.remove(0).expect_err("should be a valid document");
         assert_eq!(err, "section indentation must be same character. found 2 occurrences of '\\t' followed by ' '");
+        assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn sections_body_must_use_same_indentation_character_each_line() {
         let document = "sectionA\n\t\ta\n  b\n";
-        let err = parse_document_to_sections(document).expect_err("should be a valid document");
+        let mut sections = parse_document_to_sections(document);
+        let err = sections.remove(0).expect_err("should be a valid document");
         assert_eq!(err, "body must start with 2 characters of '\\t'");
+        assert_eq!(sections.len(), 0);
     }
 }
