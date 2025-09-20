@@ -19,6 +19,8 @@ pub mod state;
 pub mod template;
 use line_count::PeekableLineCount;
 
+use crate::DclFile;
+
 
 pub const COMMENT_CHAR: char = '#';
 
@@ -113,6 +115,27 @@ pub fn consume_until_empty<'a>(lines: &mut PeekableLineCount<Lines<'a>>) -> Opti
     }
     None
 }
+
+
+/// after calling `parse_document_to_sections` you filter out the errors and pass
+/// the successfully parsed sections to this function, and it parses generic Sections into
+/// concrete Sections of a DclFile, discarding any unknown sections
+pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, SpannedDiagnostic> {
+    let mut out = DclFile::default();
+    for section in sections {
+        match section.typ {
+            state::SECTION_TYPE => {
+                state::parse_state_section(&mut out, &section)?;
+            },
+            _ => {
+                // silently drop unknown section
+                // TODO: in the future might want to make this a warn/error depending on user configuration
+            }
+        }
+    }
+    Ok(out)
+}
+
 
 pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
     let mut out = vec![];
