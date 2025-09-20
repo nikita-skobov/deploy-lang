@@ -16,7 +16,9 @@ use std::str::Lines;
 
 pub mod line_count;
 pub mod state;
+pub mod template;
 use line_count::PeekableLineCount;
+
 
 pub const COMMENT_CHAR: char = '#';
 
@@ -48,6 +50,8 @@ pub struct Section<'a> {
     pub indentation_char: IndentaionCharacter,
     pub indentation_count: usize,
     pub body: Vec<&'a str>,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Default, Debug)]
@@ -198,6 +202,8 @@ pub fn parse_section_starting_with_line<'a>(
         None => {
             // empty section body detected. the next line has no characters
             return Ok(Section {
+                start_line: line_index,
+                end_line: line_index,
                 typ,
                 parameters,
                 indentation_char: IndentaionCharacter::Space,
@@ -246,12 +252,23 @@ pub fn parse_section_starting_with_line<'a>(
     // now that we know the indentation character, and the number of indentations
     // we can collect the body:
     let body = parse_section_body(indentation_char, indentation_count, first_body_line, next_lines)?;
+    // the body will parse until we get an empty line, or run out of lines
+    // if we ran out of lines, we know the last line index is already correct.
+    // otherwise, subtract 1 because of the empty line that was advanced over
+    let mut end_line = next_lines.last_line_index();
+    if next_lines.peek().is_some() {
+        if end_line > 0 {
+            end_line -= 1;
+        }
+    }
     Ok(Section {
         typ,
         parameters,
         indentation_char,
         indentation_count,
-        body
+        body,
+        start_line: line_index,
+        end_line,
     })
 }
 
@@ -519,5 +536,41 @@ hello
         assert_eq!(err.span.end.line, 3);
         assert_eq!(err.span.start.column, 0);
         assert_eq!(err.span.end.column, 1);
+    }
+
+    #[test]
+    fn section_parses_start_and_end_line_of_section() {
+        let document = r#"# this is line0
+this is line 1
+    line2
+    # line3
+    line 4
+    line 5
+
+this is line 7
+
+
+this is line 10
+
+another 12
+  section
+  ends on 14"#;
+
+        let mut sections = parse_document_to_sections(document);
+        let section = sections.remove(0).expect("it should be a valid section");
+        assert_eq!(section.start_line, 1);
+        assert_eq!(section.end_line, 5);
+
+        let section = sections.remove(0).expect("it should be a valid section");
+        assert_eq!(section.start_line, 7);
+        assert_eq!(section.end_line, 7);
+
+        let section = sections.remove(0).expect("it should be a valid section");
+        assert_eq!(section.start_line, 10);
+        assert_eq!(section.end_line, 10);
+
+        let section = sections.remove(0).expect("it should be a valid section");
+        assert_eq!(section.start_line, 12);
+        assert_eq!(section.end_line, 14);
     }
 }
