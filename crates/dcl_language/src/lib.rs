@@ -6,7 +6,11 @@
 //! part of the section body as long as they have the same number of indentation characters.
 //! 
 
-use std::{iter::Peekable, str::Lines};
+use std::str::Lines;
+
+use crate::line_count::PeekableLineCount;
+
+pub mod line_count;
 
 pub const COMMENT_CHAR: char = '#';
 
@@ -65,7 +69,7 @@ impl PartialEq<&str> for SpannedDiagnostic {
     }
 }
 
-pub fn consume_until_empty<'a>(lines: &mut Peekable<Lines<'a>>) -> Option<()> {
+pub fn consume_until_empty<'a>(lines: &mut PeekableLineCount<Lines<'a>>) -> Option<()> {
     loop {
         let line = lines.peek()?;
         if line.is_empty() {
@@ -78,10 +82,8 @@ pub fn consume_until_empty<'a>(lines: &mut Peekable<Lines<'a>>) -> Option<()> {
 
 pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
     let mut out = vec![];
-    let mut lines: Peekable<Lines<'a>> = document.lines().peekable();
-    let mut line_index = 0;
+    let mut lines: PeekableLineCount<Lines<'a>> = PeekableLineCount::new(document.lines());
     while let Some(line) = lines.next() {
-        line_index += 1;
         if line.is_empty() { continue; }
         if line.starts_with(|c: char| c.is_ascii_alphabetic()) {
             // start of section: parse it
@@ -109,8 +111,9 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
         };
         if is_invalid {
             let mut diag = SpannedDiagnostic::default();
-            diag.span.start.line = line_index;
-            diag.span.end.line = line_index;
+            let err_line = lines.last_line_index();
+            diag.span.start.line = err_line;
+            diag.span.end.line = err_line;
             diag.span.start.column = 0;
             diag.span.end.column = line.len();
             diag.message = format!("invalid line '{}' must be a section or a comment", line);
@@ -123,7 +126,7 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
 
 pub fn parse_section_starting_with_line<'a>(
     first_line: &'a str,
-    next_lines: &mut Peekable<Lines<'a>>,
+    next_lines: &mut PeekableLineCount<Lines<'a>>,
 ) -> Result<Section<'a>, String> {
     // a section must start with a type
     // a type can be optionally followed by parameters
@@ -239,7 +242,7 @@ pub fn parse_section_body<'a>(
     indentation_char: IndentaionCharacter,
     indentation_count: usize,
     first_body_line: &'a str,
-    next_lines: &mut Peekable<Lines<'a>>,
+    next_lines: &mut PeekableLineCount<Lines<'a>>,
 ) -> Result<Vec<&'a str>, String> {
     let mut body = vec![];
     let invalid_utf8_err = format!("invalid utf8 sequence from {}..", indentation_count);
