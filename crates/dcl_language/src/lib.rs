@@ -440,35 +440,35 @@ mod test {
 
     #[test]
     fn section_types_must_be_alphanumeric() {
-        let document = "sec❤️tionA\n\n";
+        let document = "sec💙tionA\n\n";
         let mut sections = parse_document_to_sections(document);
         let err = sections.remove(0).expect_err("should be a valid document");
         // TODO: this error message should say something about "sections must start with alphabetic ascii character"
-        assert_eq!(err, "invalid section type 'sec❤️tionA': must only contain ascii alphanumeric characters");
+        assert_eq!(err, "invalid section type 'sec💙tionA': must only contain ascii alphanumeric characters");
         assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn section_params_can_be_non_ascii() {
-        let document = "sectionA ❤️\n\n";
+        let document = "sectionA 💙\n\n";
         let mut sections = parse_document_to_sections(document);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters.unwrap(), "❤️");
+        assert_eq!(section.parameters.unwrap(), "💙");
         assert!(section.body.is_empty());
         assert_eq!(sections.len(), 0);
     }
 
     #[test]
     fn body_can_contain_non_ascii() {
-        let document = "sectionA\n\t\t❤️ hello\n\t\tsomething#❤️\n";
+        let document = "sectionA\n\t\t💙 hello\n\t\tsomething#💙\n";
         let mut sections = parse_document_to_sections(document);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 2);
         assert_eq!(section.parameters, None);
-        assert_eq!(section.body, vec!["❤️ hello", "something"]);
+        assert_eq!(section.body, vec!["💙 hello", "something"]);
         assert_eq!(sections.len(), 0);
     }
 
