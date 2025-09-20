@@ -11,7 +11,8 @@
 				"${workspaceRoot}/vscode-client/out/*",
 			],
 			"autoAttachChildProcesses": true,
-			"preLaunchTask": "build-extension"
+			"preLaunchTask": "build-extension",
+			"internalConsoleOptions": "openOnSessionStart"
         }
 	]
 }
