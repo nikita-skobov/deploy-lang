@@ -11,6 +11,8 @@ use std::str::Lines;
 use crate::line_count::PeekableLineCount;
 
 pub mod line_count;
+pub mod state;
+pub mod dynamic_json;
 
 pub const COMMENT_CHAR: char = '#';
 
