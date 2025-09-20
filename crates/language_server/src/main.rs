@@ -1,4 +1,4 @@
-use std::{error::Error, io::Write};
+use std::error::Error;
 
 use lsp_server::{Connection, Message};
 use lsp_types::notification::Notification as _;
@@ -18,21 +18,11 @@ use lsp_types::{
 };
 
 fn main() {
-    let mut f = std::fs::File::options()
-        .append(true)
-        .create(true)
-        .write(true)
-        .open("/tmp/serverlog2.txt").unwrap();
-    f.write_all(b"we starty?\n").unwrap();
-
-
     let (connection, io_thread) = Connection::stdio();
 
     // read initialize request
     let (id, params) =
         connection.initialize_start().unwrap();
-    let formatted = format!("got client params: {:?}\n", params);
-    f.write_all(formatted.as_bytes()).unwrap();
 
     // advertised capabilities
     let caps = ServerCapabilities {
@@ -46,13 +36,9 @@ fn main() {
         "capabilities": caps,
         "offsetEncoding": ["utf-8"],
     });
-    let formatted = format!("sending server capabilities to client: {:?}\n", init_result);
-    f.write_all(formatted.as_bytes()).unwrap();
     connection.initialize_finish(id, init_result).unwrap();
-    f.write_all(b"finished initialization!\n").unwrap();
-
-    // now you can start your main loop
-    main_loop(connection, params, f).unwrap();
+    send_log(&connection, "finished initialization");
+    main_loop(connection, params).unwrap();
     io_thread.join().unwrap();
 }
 
@@ -94,13 +80,9 @@ fn generate_diagnostics_from_current_document<'a>(document: &'a str) -> Vec<Diag
 fn main_loop(
     connection: Connection,
     params: serde_json::Value,
-    mut f: std::fs::File,
 ) -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     let _init: InitializeParams = serde_json::from_value(params)?;
-    f.write_all(b"in main loopy\n").unwrap();
     for msg in &connection.receiver {
-        let formatted = format!("got message: {:?}\n", msg);
-        f.write_all(formatted.as_bytes()).unwrap();
         if let Message::Notification(notif) = msg {
             if notif.method == "textDocument/didChange" {
                 let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
@@ -118,8 +100,22 @@ fn main_loop(
                         params: serde_json::to_value(params).unwrap(),
                     }
                 )).unwrap();
+                send_log(&connection, "sending diagnostics");
             }
         }
     }
     Ok(())
+}
+
+fn send_log<S: AsRef<str>>(
+    connection: &Connection,
+    message: S,
+) {
+    let log = serde_json::Value::String(message.as_ref().to_string());
+    connection.sender.send(Message::Notification(
+        lsp_server::Notification {
+            method: "custom/log".to_string(),
+            params: log,
+        }
+    )).expect("failed to send log notification to client");
 }

@@ -19,6 +19,9 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   client = new LanguageClient('dclServer', 'DCL Language Server', serverOptions, clientOptions);
+  client.onNotification('custom/log', (logMessage) => {
+    console.log(logMessage);
+  });
   client.start();
 }
 
