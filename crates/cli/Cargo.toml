@@ -1,0 +1,8 @@
+[package]
+name = "cli"
+version = "0.1.0"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dcl_language = { workspace = true }
