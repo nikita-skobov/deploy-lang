@@ -63,6 +63,20 @@ pub struct SpannedDiagnostic {
     pub message: String,
 }
 
+impl SpannedDiagnostic {
+    /// returns a default diagnostic with error set, and with
+    /// the start/end to be assumed on the same line, with the provided ending column,
+    /// and the starting column assumed to be 0.
+    pub fn new(err: String, line: usize, end_column: usize) -> Self {
+        let mut out = Self::default();
+        out.message = err;
+        out.span.start.line = line;
+        out.span.end.line = line;
+        out.span.end.column = end_column;
+        out
+    }
+}
+
 impl PartialEq<&str> for SpannedDiagnostic {
     fn eq(&self, other: &&str) -> bool {
         self.message == *other
@@ -90,9 +104,7 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
             let section = match parse_section_starting_with_line(line, &mut lines) {
                 Ok(o) => o,
                 Err(e) => {
-                    let mut diag = SpannedDiagnostic::default();
-                    diag.message = e;
-                    out.push(Err(diag));
+                    out.push(Err(e));
                     // must advance lines til next section, otherwise will get
                     // unnecessary errors re-parsing the same section from the middle
                     consume_until_empty(&mut lines);
@@ -127,7 +139,7 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
 pub fn parse_section_starting_with_line<'a>(
     first_line: &'a str,
     next_lines: &mut PeekableLineCount<Lines<'a>>,
-) -> Result<Section<'a>, String> {
+) -> Result<Section<'a>, SpannedDiagnostic> {
     // a section must start with a type
     // a type can be optionally followed by parameters
     let (typ, parameters) = match first_line.split_once(' ') {
@@ -137,10 +149,16 @@ pub fn parse_section_starting_with_line<'a>(
     // a type must be ascii alphanumeric characters
     // and whose first character must be alphabetic:
     if !typ.starts_with(|c: char| c.is_ascii_alphabetic()) {
-        return Err(format!("invalid section type '{}': must start with ascii alphabetic character", typ));
+        let line_index = next_lines.line_index();
+        let err = format!("invalid section type '{}': must start with ascii alphabetic character", typ);
+        let diag = SpannedDiagnostic::new(err, line_index, typ.len());
+        return Err(diag);
     }
     if !typ.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err(format!("invalid section type '{}': must only contain ascii alphanumeric characters", typ));
+        let line_index = next_lines.line_index();
+        let err = format!("invalid section type '{}': must only contain ascii alphanumeric characters", typ);
+        let diag = SpannedDiagnostic::new(err, line_index, typ.len());
+        return Err(diag);
     }
     // remove from the parameters the text after the comment character, if present
     let parameters = parameters.map(|x| match x.split_once(COMMENT_CHAR) {
@@ -176,11 +194,15 @@ pub fn parse_section_starting_with_line<'a>(
     let indentation_char = match first_indentation_character {
         ' ' => IndentaionCharacter::Space,
         '\t' => IndentaionCharacter::Tab,
-        c => return Err(format!(
-            "section body of '{}{}' has invalid starting character '{}' must be a space or a tab",
-            typ, parameters_debug,
-            c
-        )),
+        c => {
+            let err = format!(
+                "section body of '{}{}' has invalid starting character '{}' must be a space or a tab",
+                typ, parameters_debug,
+                c
+            );
+            let diag = SpannedDiagnostic::new(err, next_lines.line_index(), 1);
+            return Err(diag)
+        }
     };
     let indentation_character = indentation_char.as_character();
     // once an indentation character is found, all the following characters must be the same indentation character
@@ -192,12 +214,14 @@ pub fn parse_section_starting_with_line<'a>(
                 let c_debug = if *c == '\t' {
                     "\\t"
                 } else { " " };
-                return Err(format!(
+                let err = format!(
                     "section indentation must be same character. found {} occurrences of {} followed by '{}'",
                     indentation_count,
                     indentation_char.as_debug(),
                     c_debug,
-                ))
+                );
+                let diag = SpannedDiagnostic::new(err, next_lines.line_index(), indentation_count);
+                return Err(diag);
             }
             break;
         }
@@ -219,14 +243,18 @@ pub fn parse_section_starting_with_line<'a>(
 pub fn add_body_line<'a>(
     body: &mut Vec<&'a str>,
     line: &'a str,
+    line_index: usize,
     indentation_count: usize,
     indentation_char: IndentaionCharacter,
     invalid_utf8_err: &str,
-) -> Result<(), String> {
+) -> Result<(), SpannedDiagnostic> {
     let indentation_character = indentation_char.as_character();
-    let (indentation, remaining) = line.split_at_checked(indentation_count).ok_or(invalid_utf8_err)?;
+    let (indentation, remaining) = line.split_at_checked(indentation_count).ok_or(invalid_utf8_err)
+        .map_err(|e| SpannedDiagnostic::new(e.to_string(), line_index, line.len()))?;
     if !indentation.chars().all(|c| c == indentation_character) {
-        return Err(format!("body must start with {} characters of {}", indentation_count, indentation_char.as_debug()));
+        let err = format!("body must start with {} characters of {}", indentation_count, indentation_char.as_debug());
+        let diag = SpannedDiagnostic::new(err, line_index, indentation_count);
+        return Err(diag);
     }
     let body_line = match remaining.split_once(COMMENT_CHAR) {
         Some((l, _comment)) => l,
@@ -243,11 +271,12 @@ pub fn parse_section_body<'a>(
     indentation_count: usize,
     first_body_line: &'a str,
     next_lines: &mut PeekableLineCount<Lines<'a>>,
-) -> Result<Vec<&'a str>, String> {
+) -> Result<Vec<&'a str>, SpannedDiagnostic> {
     let mut body = vec![];
     let invalid_utf8_err = format!("invalid utf8 sequence from {}..", indentation_count);
     // get first line into body since it was already determined to be part of the body:
-    add_body_line(&mut body, first_body_line, indentation_count, indentation_char, &invalid_utf8_err)?;
+    let line_index = next_lines.last_line_index();
+    add_body_line(&mut body, first_body_line, line_index, indentation_count, indentation_char, &invalid_utf8_err)?;
 
     // put all lines into body until encounter an empty line
     // a section MUST be followed by an empty line
@@ -257,7 +286,8 @@ pub fn parse_section_body<'a>(
         if next_line.is_empty() {
             break;
         }
-        add_body_line(&mut body, next_line, indentation_count, indentation_char, &invalid_utf8_err)?;
+        let line_index = next_lines.last_line_index();
+        add_body_line(&mut body, next_line, line_index, indentation_count, indentation_char, &invalid_utf8_err)?;
     }
     Ok(body)
 }
@@ -458,5 +488,21 @@ mod test {
         let err = sections.remove(0).expect_err("should be a valid document");
         assert_eq!(err, "body must start with 2 characters of '\\t'");
         assert_eq!(sections.len(), 0);
+    }
+
+    #[test]
+    fn section_body_err_correct_position() {
+        // this should error on the "dsa" line because its indented with a tab
+        // whereas the line before it is indented with a space
+        let document = r#"
+hello
+ w
+	dsa"#;
+        let mut sections = parse_document_to_sections(document);
+        let err = sections.remove(0).expect_err("should be an error");
+        assert_eq!(err.span.start.line, 3);
+        assert_eq!(err.span.end.line, 3);
+        assert_eq!(err.span.start.column, 0);
+        assert_eq!(err.span.end.column, 1);
     }
 }
