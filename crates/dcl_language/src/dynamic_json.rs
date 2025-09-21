@@ -162,26 +162,16 @@ pub fn evaluate_json_path_recursively(dynamic_json_val: DynamicValue, known_valu
         DynamicValue::PathQuery(json_query) => {
             let mut values = known_values.query(&json_query)
                 .map_err(|e| format!("failed to lookup json path query '{}': {:?}", json_query, e))?;
-            // TODO: needs to be robust against ['field'] queries...
-            if !json_query.contains('[') {
+            // TODO: needs to be more robust
+            // what about cases where the user indeed wanted an array of 1 item?
+            if values.len() == 1 {
                 // assume that query was for a single value, try to extract the value:
-                if values.len() == 1 {
-                    let val = unsafe { *values.get_unchecked(0) };
-                    return Ok(val.clone());
-                }
+                let val = unsafe { *values.get_unchecked(0) };
+                return Ok(val.clone());
             }
             Ok(serde_json::Value::Array(values.drain(..).map(|x| x.clone()).collect()))
         }
     }
-}
-
-pub fn replace_dynamic_json2<S: AsRef<str>>(
-    user_input: S,
-    known_values: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let dynamic_json_val = parse_to_dynamic_value(user_input)?;
-    let val = evaluate_json_path_recursively(dynamic_json_val, known_values)?;
-    Ok(val)
 }
 
 /// repeatedly parse the user input into a serde json Value object,
@@ -197,62 +187,9 @@ pub fn replace_dynamic_json<S: AsRef<str>>(
     user_input: S,
     known_values: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let mut json_str = user_input.as_ref().to_string();
-    let mut last_position: Option<[usize; 2]> = None;
-    loop {
-        let err = match serde_json::from_str(&json_str) {
-            Ok(o) => return Ok(o),
-            Err(e) => e,
-        };
-        if !err.is_syntax() {
-            return Err(format!("failed to parse json string: {:?}", err));
-        }
-        let line = err.line();
-        let col = err.column();
-        // account for serde json 1 based indexing:
-        let line = if line == 0 { 0 } else { line - 1 };
-        let col = if col == 0 { 0 } else { col - 1 };
-        // check if this is the same exact error:
-        if let Some([last_line, last_col]) = last_position {
-            if last_line == line && last_col == col {
-                return Err(format!("failed to replace dynamic json: infinite loop detected from error: {:?}", err));
-            }
-        }
-        // get the line where the error occurred:
-        let mut json_str_lines: Vec<String> = json_str.lines().map(|x| x.to_string()).collect();
-        let error_line = json_str_lines.get_mut(line)
-            .ok_or(&format!("found json syntax error on line {} but user input has fewer lines", line))?;
-        let error_line_len = error_line.len();
-        let error_substr = error_line.get_mut(col..)
-            .ok_or(&format!("found json syntax error on line {}, col {} but that line is only {} long", line, col, error_line_len))?;
-        if !error_substr.starts_with(char::is_alphanumeric) {
-            // can error since its not a valid replace word
-            return Err(format!("failed to parse json string: {:?}", err));
-        }
-        let replace_word = extract_word_to_replace(&error_substr)?;
-        let replace_range = col..col+replace_word.len();
-        match known_values.get(&replace_word) {
-            Some(val) => {
-                // found the value to replace
-                let val_str = serde_json::to_string(val)
-                    .map_err(|e| format!("failed to substitute dynamic json value for '{}'. serialization error: {:?}",
-                        replace_word,
-                        e,
-                    ))?;
-                error_line.replace_range(replace_range, &val_str);
-            }
-            None => {
-                return Err(format!(
-                    "attempted to substitute dynamic json value for '{}' but this does not exist in the known values",
-                    replace_word,
-                ));
-            }
-        }
-        // now that we successfully replaced the word with its json value,
-        // put the string back together and try again:
-        json_str = json_str_lines.join("\n");
-        last_position = Some([line, col]);
-    }
+    let dynamic_json_val = parse_to_dynamic_value(user_input)?;
+    let val = evaluate_json_path_recursively(dynamic_json_val, known_values)?;
+    Ok(val)
 }
 
 /// given a substring of an expected json path query, construct a string
@@ -271,22 +208,6 @@ fn extract_json_path_query(error_substr: &str) -> Result<String, String> {
     }
     if out.is_empty() {
         return Err(format!("failed to locate word to replace from error line: '{}'", error_substr));
-    }
-    Ok(out)
-}
-
-fn extract_word_to_replace(error_line: &str) -> Result<String, String> {
-    // estimate max size of a replace word to avoid many repeated allocations
-    // for small-medium size words:
-    let mut out = String::with_capacity(60);
-    for char in error_line.chars() {
-        if char == ',' || char.is_whitespace() || (!char.is_alphanumeric() && char != '_') {
-            break;
-        }
-        out.push(char);
-    }
-    if out.is_empty() {
-        return Err(format!("failed to locate word to replace from error line: '{}'", error_line));
     }
     Ok(out)
 }
@@ -311,7 +232,7 @@ mod test {
     fn json_path_conversion_works() {
         let input = r#"{"hello": $.world }"#;
         let known_values = serde_json::json!({ "world": "you are my world" });
-        let value = replace_dynamic_json2(input, &known_values).expect("it should replace");
+        let value = replace_dynamic_json(input, &known_values).expect("it should replace");
         assert_eq!(value, serde_json::json!({"hello": "you are my world"}));
     }
 
@@ -319,21 +240,21 @@ mod test {
     fn basic_replace_works() {
         let values = serde_json::json!({"world": "you are my world"});
         let cases = [
-            r#"{"hello": world}"#,
-            r#"{"hello": world }"#,
-            r#"{"hello":world }"#,
-            r#"{"hello":world}"#,
+            r#"{"hello": $.world}"#,
+            r#"{"hello": $.world }"#,
+            r#"{"hello":$.world }"#,
+            r#"{"hello":$.world}"#,
             r#"{
-            "hello": world
+            "hello": $.world
             }"#,
             r#"{
-            "hello": world}"#,
+            "hello": $.world}"#,
             r#"{
-            "hello": world,
+            "hello": $.world,
             "other": "thing"
             }"#,
             r#"{
-            "hello": world ,
+            "hello": $.world ,
             "other": "thing"
             }"#,
         ];
@@ -352,8 +273,8 @@ mod test {
         });
         let input = r#"
         {
-            "should1": a,
-            "should2": b, "should3": c
+            "should1": $.a,
+            "should2": $.b, "should3": $.c
         }
         "#;
         let out = replace_dynamic_json(input, &values).unwrap();
@@ -371,7 +292,8 @@ mod test {
         });
         let input = r#"
         {
-            "some_obj": a_obj
+            "some_obj": $.a_obj,
+            "should_be_two": $.a_obj.hello[1]
         }
         "#;
         let out = replace_dynamic_json(input, &values).unwrap();
@@ -379,5 +301,6 @@ mod test {
             "hello": ["1", 2, {"b":"b"}, false]
         });
         assert_eq!(out["some_obj"], expected);
+        assert_eq!(out["should_be_two"], serde_json::json!(2));
     }
 }
