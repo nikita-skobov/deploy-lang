@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-# jsonpath-rust = "1.0.4"
+jsonpath-rust = "1.0.4"
