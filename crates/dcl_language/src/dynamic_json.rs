@@ -32,7 +32,7 @@ const PATH_QUERY_KEY: &str = "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__";
 
 /// same as serde_json::Value but with an added variant: PathQuery.
 /// this is used to capture arbitrary json with arbitrary PathQueries.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DynamicValue {
     Null,
     Bool(bool),
@@ -42,6 +42,13 @@ pub enum DynamicValue {
     Object(HashMap<String, DynamicValue>),
     /// represent a json path query as a string
     PathQuery(String),
+}
+
+impl DynamicValue {
+    /// converts a dynamic value into a serde json value
+    pub fn to_serde_json_value(self) -> serde_json::Value {
+        convert_dynamic_value_recursively(self)
+    }
 }
 
 /// used to represent a path query as an object temporarily
@@ -170,6 +177,36 @@ pub fn evaluate_json_path_recursively(dynamic_json_val: DynamicValue, known_valu
                 return Ok(val.clone());
             }
             Ok(serde_json::Value::Array(values.drain(..).map(|x| x.clone()).collect()))
+        }
+    }
+}
+
+/// converts a dynamic value into a serde json value recursively, converting any
+/// json path queries back to their object representation via the key `PATH_QUERY_KEY`
+pub fn convert_dynamic_value_recursively(dynamic_json_val: DynamicValue) -> serde_json::Value {
+    match dynamic_json_val {
+        DynamicValue::Null => serde_json::Value::Null,
+        DynamicValue::Bool(b) => serde_json::Value::Bool(b),
+        DynamicValue::Number(number) => serde_json::Value::Number(number),
+        DynamicValue::String(s) => serde_json::Value::String(s),
+        DynamicValue::Array(dynamic_values) => {
+            let mut out = Vec::with_capacity(dynamic_values.len());
+            for val in dynamic_values {
+                out.push(convert_dynamic_value_recursively(val));
+            }
+            serde_json::Value::Array(out)
+        }
+        DynamicValue::Object(hash_map) => {
+            let mut out = Map::with_capacity(hash_map.len());
+            for (key, val) in hash_map {
+                out.insert(key, convert_dynamic_value_recursively(val));
+            }
+            serde_json::Value::Object(out)
+        }
+        DynamicValue::PathQuery(json_query) => {
+            let mut out = Map::new();
+            out.insert(PATH_QUERY_KEY.to_string(), serde_json::Value::String(json_query));
+            serde_json::Value::Object(out)
         }
     }
 }

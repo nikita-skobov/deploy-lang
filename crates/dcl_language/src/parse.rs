@@ -17,6 +17,7 @@ use std::str::Lines;
 pub mod line_count;
 pub mod state;
 pub mod template;
+pub mod resource;
 use line_count::PeekableLineCount;
 
 use crate::DclFile;
@@ -127,6 +128,9 @@ pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, S
             state::SECTION_TYPE => {
                 state::parse_state_section(&mut out, &section)?;
             },
+            resource::SECTION_TYPE => {
+                resource::parse_resource_section(&mut out, &section)?;
+            }
             _ => {
                 // silently drop unknown section
                 // TODO: in the future might want to make this a warn/error depending on user configuration
