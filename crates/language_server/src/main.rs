@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use dcl_language::parse::SpannedDiagnostic;
 use lsp_server::{Connection, Message};
 use lsp_types::notification::Notification as _;
 use lsp_types::{
@@ -42,6 +43,28 @@ fn main() {
     io_thread.join().unwrap();
 }
 
+fn spanned_diag_to_lsp_diag(e: SpannedDiagnostic) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: Position { line: e.span.start.line as _, character: e.span.start.column as _ },
+            end: Position { line: e.span.end.line as _, character: e.span.end.column as _ },
+        },
+        severity: Some(match e.severity {
+            0 => DiagnosticSeverity::INFORMATION,
+            1 => DiagnosticSeverity::HINT,
+            2 => DiagnosticSeverity::WARNING,
+            _ => DiagnosticSeverity::ERROR,
+        }),
+        code: None,
+        code_description: None,
+        source: Some("my-lsp".into()),
+        message: e.message,
+        related_information: None,
+        tags: None,
+        data: None,
+    }
+}
+
 /// given the current document, generate all diagnostics that should be emitted.
 /// this represents the current "state" of the diagnostics. whatever the server returns
 /// here, is what the client will show, so if the user previously had diagnostic errors,
@@ -50,29 +73,22 @@ fn main() {
 fn generate_diagnostics_from_current_document<'a>(document: &'a str) -> Vec<Diagnostic> {
     let sections = dcl_language::parse::parse_document_to_sections(document);
     let mut out = vec![];
+    let mut valid_sections = vec![];
     for section in sections {
-        if let Err(e) = section {
-            let diag = Diagnostic {
-                range: Range {
-                    start: Position { line: e.span.start.line as _, character: e.span.start.column as _ },
-                    end: Position { line: e.span.end.line as _, character: e.span.end.column as _ },
-                },
-                severity: Some(match e.severity {
-                    0 => DiagnosticSeverity::INFORMATION,
-                    1 => DiagnosticSeverity::HINT,
-                    2 => DiagnosticSeverity::WARNING,
-                    _ => DiagnosticSeverity::ERROR,
-                }),
-                code: None,
-                code_description: None,
-                source: Some("my-lsp".into()),
-                message: e.message,
-                related_information: None,
-                tags: None,
-                data: None,
-            };
-            out.push(diag);
-        }
+        let e = match section {
+            Ok(o) => {
+                valid_sections.push(o);
+                continue;
+            },
+            Err(e) => e,
+        };
+        let diag = spanned_diag_to_lsp_diag(e);
+        out.push(diag);
+    }
+    // now with the valid sections, try to parse/validate as a Dcl file:
+    // TODO: sections_to_dcl_file should support multiple diagnostics, not just 1 error
+    if let Err(e) = dcl_language::parse::sections_to_dcl_file(valid_sections) {
+        out.push(spanned_diag_to_lsp_diag(e));
     }
     out
 }
