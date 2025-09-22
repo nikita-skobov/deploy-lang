@@ -21,7 +21,7 @@ pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         .map_err(|e| {
             SpannedDiagnostic::new(e.to_string(), section.start_line, SECTION_TYPE.len())
         })?;
-    let first_line_len = SECTION_TYPE.len() + params.len();
+    let first_line_len = SECTION_TYPE.len() + params.len() + 1;
     let (template_name, resource_name) = match params.split_once("(") {
         Some((l, r)) => {
             let resource_name = r.trim();
@@ -114,5 +114,20 @@ resource other_template(other_resource)
         assert_eq!(resource.resource_name, "other_resource");
         assert_eq!(resource.template_name, "other_template");
         assert_eq!(resource.input.to_serde_json_value(), serde_json::json!({"a":"b"}));
+    }
+
+    #[test]
+    fn should_error_for_missing_name() {
+        let document = r#"
+resource some_template()
+  {"hello":"world"}"#;
+        let mut sections = parse_document_to_sections(document);
+        let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let err = sections_to_dcl_file(sections).expect_err("it should err");
+        assert_eq!(err.message, "resource missing name");
+        assert_eq!(err.span.start.line, 1);
+        assert_eq!(err.span.end.line, 1);
+        assert_eq!(err.span.start.column, 0);
+        assert_eq!(err.span.end.column, 24);
     }
 }
