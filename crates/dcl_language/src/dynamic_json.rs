@@ -217,7 +217,7 @@ pub fn convert_dynamic_value_recursively(dynamic_json_val: DynamicValue) -> serd
 /// ```
 /// use dcl_language::dynamic_json::replace_dynamic_json;
 /// let values = serde_json::json!({"world": "you are my world"});
-/// let out = replace_dynamic_json(r#"{"hello": world}"#, &values).unwrap();
+/// let out = replace_dynamic_json(r#"{"hello": $.world}"#, &values).unwrap();
 /// assert_eq!(out["hello"], "you are my world");
 /// ```
 pub fn replace_dynamic_json<S: AsRef<str>>(
