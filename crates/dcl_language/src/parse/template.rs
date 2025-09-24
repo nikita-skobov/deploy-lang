@@ -1,4 +1,4 @@
-use crate::{parse::{line_count::PeekableLineCount, Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{line_count::{PeekableLineCount, StrAtLine}, Section, SpannedDiagnostic}, DclFile};
 
 pub const SECTION_TYPE: &str = "template";
 
@@ -88,7 +88,7 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
             None => break,
         };
         // TODO: allow directives on top of subsections
-        if line.starts_with("create") {
+        if line.s.starts_with("create") {
             parse_lines_to_create_transition(&mut out, &line, &mut body_iter)?;
         } else {
             let line_index = body_iter.line_index();
@@ -104,8 +104,8 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
 
 pub fn parse_lines_to_create_transition<'a>(
     template_section: &mut TemplateSection,
-    _current_line: &'a str,
-    lines: &mut PeekableLineCount<std::slice::Iter<'_, &'a str>>
+    _current_line: &StrAtLine<'a>,
+    lines: &mut PeekableLineCount<std::slice::Iter<'_, StrAtLine<'a>>>
 ) -> Result<(), SpannedDiagnostic> {
     // can only have 1 create subsection:
     if template_section.create_was_set {
@@ -150,16 +150,16 @@ fn get_prefix(s: &str) -> String {
 }
 
 pub fn parse_command<'a>(
-    lines: &mut PeekableLineCount<std::slice::Iter<'_, &'a str>>,
+    lines: &mut PeekableLineCount<std::slice::Iter<'_, StrAtLine<'a>>>,
 ) -> Result<Option<CliCommand>, SpannedDiagnostic> {
     let (command_line, indent_prefix) = match lines.peek() {
         Some(l) => {
             // check if its an empty line with whitespace:
-            if l.chars().all(|c| c.is_ascii_whitespace()) {
+            if l.s.chars().all(|c| c.is_ascii_whitespace()) {
                 return Ok(None);
             }
             // test that its a command line: it should have an indent:
-            let indent_prefix = get_prefix(l);
+            let indent_prefix = get_prefix(l.s);
             if indent_prefix.is_empty() {
                 return Ok(None)
             }
@@ -185,10 +185,10 @@ pub fn parse_command<'a>(
         // indented more than indent_prefix, its args for this command:
         let arg_transform_line = match lines.peek() {
             Some(l) => {
-                let current_prefix = get_prefix(l);
+                let current_prefix = get_prefix(l.s);
                 if current_prefix.len() > indent_prefix.len() {
                     // take it off the iterator:
-                    let out = l.trim().to_string();
+                    let out = l.s.trim().to_string();
                     let _ = lines.next();
                     out
                 } else {

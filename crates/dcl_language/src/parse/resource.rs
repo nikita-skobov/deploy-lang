@@ -42,7 +42,7 @@ pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
     if resource_name.is_empty() {
         return Err(SpannedDiagnostic::new("resource missing name".to_string(), section.start_line, first_line_len));
     }
-    let body_concat = section.body.join("\n");
+    let body_concat = section.body.iter().map(|x| x.s).collect::<Vec<_>>().join("\n");
     let body_concat = body_concat.trim();
     if body_concat.is_empty() {
         return Err(SpannedDiagnostic::new(format!("resource '{}' missing a body", resource_name), section.start_line, first_line_len));

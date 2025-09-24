@@ -51,7 +51,7 @@ pub struct Section<'a> {
     pub parameters: Option<&'a str>,
     pub indentation_char: IndentaionCharacter,
     pub indentation_count: usize,
-    pub body: Vec<&'a str>,
+    pub body: Vec<StrAtLine<'a>>,
     pub start_line: usize,
     pub end_line: usize,
 }
@@ -300,7 +300,7 @@ pub fn parse_section_starting_with_line<'a>(
     }
     // now that we know the indentation character, and the number of indentations
     // we can collect the body:
-    let mut body = parse_section_body(indentation_char, indentation_count, first_body_line, next_lines)?;
+    let body = parse_section_body(indentation_char, indentation_count, first_body_line, next_lines)?;
     // the fact we're here suggests body was not empty, but to be safe we deafult to end_line: 0
     let end_line = body.last().map(|l| l.line).unwrap_or(0);
     Ok(Section {
@@ -308,7 +308,7 @@ pub fn parse_section_starting_with_line<'a>(
         parameters: parameters.map(|p| p.s),
         indentation_char,
         indentation_count,
-        body: body.drain(..).map(|x| x.s).collect(),
+        body,
         start_line: typ.line,
         end_line,
     })

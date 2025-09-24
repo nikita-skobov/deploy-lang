@@ -20,13 +20,13 @@ pub fn parse_state_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Resu
         diag.span.end.line = section.end_line;
         return Err(diag);
     }
-    let file_line = section.body.iter().find(|x| x.starts_with("file"))
+    let file_line = section.body.iter().find(|x| x.s.starts_with("file"))
         .ok_or("state section missing 'file' option in its body").map_err(|e| {
             let mut diag = SpannedDiagnostic::new(e.to_string(), section.start_line, 999);
             diag.span.end.line = section.end_line;
             diag
         })?;
-    let file = file_line.replace("file", "").trim().to_string();
+    let file = file_line.s.replace("file", "").trim().to_string();
     let parsed = StateSection { file };
     dcl.state = Some(parsed);
     Ok(())
