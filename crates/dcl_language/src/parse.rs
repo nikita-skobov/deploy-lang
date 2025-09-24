@@ -117,11 +117,10 @@ pub fn consume_until_empty<'a>(lines: &mut PeekableLineCount<Lines<'a>>) -> Opti
     None
 }
 
-
-/// after calling `parse_document_to_sections` you filter out the errors and pass
-/// the successfully parsed sections to this function, and it parses generic Sections into
-/// concrete Sections of a DclFile, discarding any unknown sections
-pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, SpannedDiagnostic> {
+pub fn sections_to_dcl_file_with_logger<'a>(
+    sections: Vec<Section<'a>>,
+    mut _logger: impl Logger,
+) -> Result<DclFile, SpannedDiagnostic> {
     let mut out = DclFile::default();
     for section in sections {
         match section.typ {
@@ -130,6 +129,9 @@ pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, S
             },
             resource::SECTION_TYPE => {
                 resource::parse_resource_section(&mut out, &section)?;
+            }
+            template::SECTION_TYPE => {
+                template::parse_template_section(&mut out, &section)?;
             }
             _ => {
                 // silently drop unknown section
@@ -141,7 +143,25 @@ pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, S
 }
 
 
-pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
+/// after calling `parse_document_to_sections` you filter out the errors and pass
+/// the successfully parsed sections to this function, and it parses generic Sections into
+/// concrete Sections of a DclFile, discarding any unknown sections
+pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, SpannedDiagnostic> {
+    sections_to_dcl_file_with_logger(sections, ())
+}
+
+pub trait Logger: Clone {
+    fn log(&mut self, log: &str);
+}
+
+impl Logger for () {
+    fn log(&mut self, _log: &str) {}
+}
+
+pub fn parse_document_to_sections_with_logger<'a>(
+    document: &'a str,
+    _logger: impl Logger,
+) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
     let mut out = vec![];
     let mut lines: PeekableLineCount<Lines<'a>> = PeekableLineCount::new(document.lines());
     while let Some(line) = lines.next() {
@@ -181,6 +201,10 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
         // otherwise its a line with a comment. can be ignored
     }
     out
+}
+
+pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
+    parse_document_to_sections_with_logger(document, ())
 }
 
 pub fn parse_section_starting_with_line<'a>(
@@ -366,6 +390,20 @@ mod test {
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e", "b"]);
+        assert_eq!(sections.len(), 0);
+    }
+
+    #[test]
+    fn can_parse_multiple_indents() {
+        let document = "sectionA\n   create\n     b\n     c\n       d\n\n";
+        let mut sections = parse_document_to_sections(document);
+        assert_eq!(sections.len(), 1);
+        let section = sections.remove(0).expect("should be a valid document");
+        assert_eq!(section.typ, "sectionA");
+        assert_eq!(section.parameters, None);
+        assert_eq!(section.indentation_char.as_character(), ' ');
+        assert_eq!(section.indentation_count, 3);
+        assert_eq!(section.body, vec!["create", "  b", "  c", "    d"]);
         assert_eq!(sections.len(), 0);
     }
 

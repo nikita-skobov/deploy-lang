@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use dcl_language::parse::SpannedDiagnostic;
+use dcl_language::parse::{Logger, SpannedDiagnostic};
 use lsp_server::{Connection, Message};
 use lsp_types::notification::Notification as _;
 use lsp_types::{
@@ -64,14 +64,25 @@ fn spanned_diag_to_lsp_diag(e: SpannedDiagnostic) -> Diagnostic {
         data: None,
     }
 }
+#[derive(Clone)]
+pub struct CodeLogger<'a> {
+    connection: &'a Connection,
+}
+
+impl<'a> Logger for CodeLogger<'a> {
+    fn log(&mut self, log: &str) {
+        send_log(self.connection, log);
+    }
+}
 
 /// given the current document, generate all diagnostics that should be emitted.
 /// this represents the current "state" of the diagnostics. whatever the server returns
 /// here, is what the client will show, so if the user previously had diagnostic errors,
 /// then they fixed them, this should return an empty vec of diagnostics, causing the client
 /// to remove past errors
-fn generate_diagnostics_from_current_document<'a>(document: &'a str) -> Vec<Diagnostic> {
-    let sections = dcl_language::parse::parse_document_to_sections(document);
+fn generate_diagnostics_from_current_document<'a>(document: &'a str, connection: &Connection) -> Vec<Diagnostic> {
+    let clg = CodeLogger { connection };
+    let sections = dcl_language::parse::parse_document_to_sections_with_logger(document, clg.clone());
     let mut out = vec![];
     let mut valid_sections = vec![];
     for section in sections {
@@ -87,7 +98,7 @@ fn generate_diagnostics_from_current_document<'a>(document: &'a str) -> Vec<Diag
     }
     // now with the valid sections, try to parse/validate as a Dcl file:
     // TODO: sections_to_dcl_file should support multiple diagnostics, not just 1 error
-    if let Err(e) = dcl_language::parse::sections_to_dcl_file(valid_sections) {
+    if let Err(e) = dcl_language::parse::sections_to_dcl_file_with_logger(valid_sections, clg) {
         out.push(spanned_diag_to_lsp_diag(e));
     }
     out
@@ -104,7 +115,7 @@ fn main_loop(
                 let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
                 let uri = params.text_document.uri;
                 let new_document = params.content_changes.first().map(|x| x.text.as_str()).unwrap_or_default();
-                let diagnostics = generate_diagnostics_from_current_document(new_document);
+                let diagnostics = generate_diagnostics_from_current_document(new_document, &connection);
                 let params = PublishDiagnosticsParams {
                     uri,
                     diagnostics: diagnostics,

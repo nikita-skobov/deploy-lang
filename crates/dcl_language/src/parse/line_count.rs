@@ -7,7 +7,10 @@ pub struct PeekableLineCount<I: Iterator> {
 
 impl<I: Iterator> PeekableLineCount<I> {
     pub fn new(iter: I) -> PeekableLineCount<I> {
-        PeekableLineCount { iter, peeked: None, counter: 0 }
+        Self::new_with_start_line(iter, 0)
+    }
+    pub fn new_with_start_line(iter: I, start_at: usize) -> PeekableLineCount<I> {
+        PeekableLineCount { iter, peeked: None, counter: start_at }
     }
 }
 
