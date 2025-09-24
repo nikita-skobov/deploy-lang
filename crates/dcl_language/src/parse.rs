@@ -18,9 +18,8 @@ pub mod line_count;
 pub mod state;
 pub mod template;
 pub mod resource;
-use line_count::PeekableLineCount;
 
-use crate::DclFile;
+use crate::{parse::line_count::{LineCounterIterator, StrAtLine}, DclFile};
 
 
 pub const COMMENT_CHAR: char = '#';
@@ -106,10 +105,10 @@ impl PartialEq<&str> for SpannedDiagnostic {
     }
 }
 
-pub fn consume_until_empty<'a>(lines: &mut PeekableLineCount<Lines<'a>>) -> Option<()> {
+pub fn consume_until_empty<'a>(lines: &mut LineCounterIterator<'a, Lines<'a>>) -> Option<()> {
     loop {
         let line = lines.peek()?;
-        if line.is_empty() {
+        if line.s.is_empty() {
             break;
         }
         lines.next();
@@ -163,10 +162,10 @@ pub fn parse_document_to_sections_with_logger<'a>(
     _logger: impl Logger,
 ) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
     let mut out = vec![];
-    let mut lines: PeekableLineCount<Lines<'a>> = PeekableLineCount::new(document.lines());
+    let mut lines: LineCounterIterator<'a, Lines<'a>> = LineCounterIterator::new(document.lines());
     while let Some(line) = lines.next() {
-        if line.is_empty() { continue; }
-        if line.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        if line.s.is_empty() { continue; }
+        if line.s.starts_with(|c: char| c.is_ascii_alphabetic()) {
             // start of section: parse it
             let section = match parse_section_starting_with_line(line, &mut lines) {
                 Ok(o) => o,
@@ -184,17 +183,16 @@ pub fn parse_document_to_sections_with_logger<'a>(
         // must be a comment, parse and validate its a valid comment (#)
         let is_invalid = match line.split_once(COMMENT_CHAR) {
             Some((left, _right)) => {
-                !left.chars().all(|c| c.is_ascii_whitespace())
+                !left.s.chars().all(|c| c.is_ascii_whitespace())
             }
             None => true,
         };
         if is_invalid {
             let mut diag = SpannedDiagnostic::default();
-            let err_line = lines.last_line_index();
-            diag.span.start.line = err_line;
-            diag.span.end.line = err_line;
+            diag.span.start.line = line.line;
+            diag.span.end.line = line.line;
             diag.span.start.column = 0;
-            diag.span.end.column = line.len();
+            diag.span.end.column = line.s.len();
             diag.message = format!("invalid line '{}' must be a section or a comment", line);
             out.push(Err(diag));
         }
@@ -208,10 +206,10 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
 }
 
 pub fn parse_section_starting_with_line<'a>(
-    first_line: &'a str,
-    next_lines: &mut PeekableLineCount<Lines<'a>>,
+    first_line: StrAtLine<'a>,
+    next_lines: &mut LineCounterIterator<'a, Lines<'a>>,
 ) -> Result<Section<'a>, SpannedDiagnostic> {
-    let line_index = next_lines.last_line_index();
+    // let line_index = next_lines.last_line_index();
     // a section must start with a type
     // a type can be optionally followed by parameters
     let (typ, parameters) = match first_line.split_once(' ') {
@@ -220,14 +218,14 @@ pub fn parse_section_starting_with_line<'a>(
     };
     // a type must be ascii alphanumeric characters
     // and whose first character must be alphabetic:
-    if !typ.starts_with(|c: char| c.is_ascii_alphabetic()) {
+    if !typ.s.starts_with(|c: char| c.is_ascii_alphabetic()) {
         let err = format!("invalid section type '{}': must start with ascii alphabetic character", typ);
-        let diag = SpannedDiagnostic::new(err, line_index, typ.len());
+        let diag = SpannedDiagnostic::new(err, typ.line, typ.s.len());
         return Err(diag);
     }
-    if !typ.chars().all(|c| c.is_ascii_alphanumeric()) {
+    if !typ.s.chars().all(|c| c.is_ascii_alphanumeric()) {
         let err = format!("invalid section type '{}': must only contain ascii alphanumeric characters", typ);
-        let diag = SpannedDiagnostic::new(err, line_index, typ.len());
+        let diag = SpannedDiagnostic::new(err, typ.line, typ.s.len());
         return Err(diag);
     }
     // remove from the parameters the text after the comment character, if present
@@ -236,27 +234,27 @@ pub fn parse_section_starting_with_line<'a>(
         None => x,
     });
     // for debug purposes we can render the parameters as a string. if there are none, its an empty string:
-    let parameters_debug = parameters.unwrap_or_default();
+    let parameters_debug = parameters.clone().unwrap_or_default();
 
     let first_body_line = match next_lines.next() {
         Some(l) => l,
         None => {
             // end of document, likely the section has no body
             // return a fake empty string to make the empty body check simpler:
-            ""
+            StrAtLine::default()
         }
     };
     // get the first indentation character
-    let mut first_body_line_chars = first_body_line.chars().peekable();
+    let mut first_body_line_chars = first_body_line.s.chars().peekable();
     let first_indentation_character = match first_body_line_chars.next() {
         Some(c) => c,
         None => {
             // empty section body detected. the next line has no characters
             return Ok(Section {
-                start_line: line_index,
-                end_line: line_index,
-                typ,
-                parameters,
+                start_line: typ.line,
+                end_line: typ.line,
+                typ: typ.s,
+                parameters: parameters.map(|p| p.s),
                 indentation_char: IndentaionCharacter::Space,
                 indentation_count: 0,
                 body: Vec::new(),
@@ -272,7 +270,7 @@ pub fn parse_section_starting_with_line<'a>(
                 typ, parameters_debug,
                 c
             );
-            let diag = SpannedDiagnostic::new(err, next_lines.last_line_index(), 1);
+            let diag = SpannedDiagnostic::new(err, first_body_line.line, 1);
             return Err(diag)
         }
     };
@@ -292,7 +290,7 @@ pub fn parse_section_starting_with_line<'a>(
                     indentation_char.as_debug(),
                     c_debug,
                 );
-                let diag = SpannedDiagnostic::new(err, next_lines.last_line_index(), indentation_count);
+                let diag = SpannedDiagnostic::new(err, first_body_line.line, indentation_count);
                 return Err(diag);
             }
             break;
@@ -302,30 +300,23 @@ pub fn parse_section_starting_with_line<'a>(
     }
     // now that we know the indentation character, and the number of indentations
     // we can collect the body:
-    let body = parse_section_body(indentation_char, indentation_count, first_body_line, next_lines)?;
-    // the body will parse until we get an empty line, or run out of lines
-    // if we ran out of lines, we know the last line index is already correct.
-    // otherwise, subtract 1 because of the empty line that was advanced over
-    let mut end_line = next_lines.last_line_index();
-    if next_lines.peek().is_some() {
-        if end_line > 0 {
-            end_line -= 1;
-        }
-    }
+    let mut body = parse_section_body(indentation_char, indentation_count, first_body_line, next_lines)?;
+    // the fact we're here suggests body was not empty, but to be safe we deafult to end_line: 0
+    let end_line = body.last().map(|l| l.line).unwrap_or(0);
     Ok(Section {
-        typ,
-        parameters,
+        typ: typ.s,
+        parameters: parameters.map(|p| p.s),
         indentation_char,
         indentation_count,
-        body,
-        start_line: line_index,
+        body: body.drain(..).map(|x| x.s).collect(),
+        start_line: typ.line,
         end_line,
     })
 }
 
 pub fn add_body_line<'a>(
-    body: &mut Vec<&'a str>,
-    line: &'a str,
+    body: &mut Vec<StrAtLine<'a>>,
+    line: StrAtLine<'a>,
     line_index: usize,
     indentation_count: usize,
     indentation_char: IndentaionCharacter,
@@ -333,8 +324,8 @@ pub fn add_body_line<'a>(
 ) -> Result<(), SpannedDiagnostic> {
     let indentation_character = indentation_char.as_character();
     let (indentation, remaining) = line.split_at_checked(indentation_count).ok_or(invalid_utf8_err)
-        .map_err(|e| SpannedDiagnostic::new(e.to_string(), line_index, line.len()))?;
-    if !indentation.chars().all(|c| c == indentation_character) {
+        .map_err(|e| SpannedDiagnostic::new(e.to_string(), line_index, line.s.chars().count()))?;
+    if !indentation.s.chars().all(|c| c == indentation_character) {
         let err = format!("body must start with {} characters of {}", indentation_count, indentation_char.as_debug());
         let diag = SpannedDiagnostic::new(err, line_index, indentation_count);
         return Err(diag);
@@ -343,7 +334,7 @@ pub fn add_body_line<'a>(
         Some((l, _comment)) => l,
         None => remaining,
     };
-    if !body_line.is_empty() {
+    if !body_line.s.is_empty() {
         body.push(body_line);
     }
     Ok(())
@@ -352,25 +343,25 @@ pub fn add_body_line<'a>(
 pub fn parse_section_body<'a>(
     indentation_char: IndentaionCharacter,
     indentation_count: usize,
-    first_body_line: &'a str,
-    next_lines: &mut PeekableLineCount<Lines<'a>>,
-) -> Result<Vec<&'a str>, SpannedDiagnostic> {
+    first_body_line: StrAtLine<'a>,
+    next_lines: &mut LineCounterIterator<'a, Lines<'a>>,
+) -> Result<Vec<StrAtLine<'a>>, SpannedDiagnostic> {
     let mut body = vec![];
     let invalid_utf8_err = format!("invalid utf8 sequence from {}..", indentation_count);
     // get first line into body since it was already determined to be part of the body:
-    let line_index = next_lines.last_line_index();
-    add_body_line(&mut body, first_body_line, line_index, indentation_count, indentation_char, &invalid_utf8_err)?;
+    let line = first_body_line.line;
+    add_body_line(&mut body, first_body_line, line, indentation_count, indentation_char, &invalid_utf8_err)?;
 
     // put all lines into body until encounter an empty line
     // a section MUST be followed by an empty line
     // therefore its ok to consume it here: if we detect its empty
     // we break out, and the caller knows to start the next section
     while let Some(next_line) = next_lines.next() {
-        if next_line.is_empty() {
+        if next_line.s.is_empty() {
             break;
         }
-        let line_index = next_lines.last_line_index();
-        add_body_line(&mut body, next_line, line_index, indentation_count, indentation_char, &invalid_utf8_err)?;
+        let line = next_line.line;
+        add_body_line(&mut body, next_line, line, indentation_count, indentation_char, &invalid_utf8_err)?;
     }
     Ok(body)
 }
