@@ -249,6 +249,72 @@ template something
         let err = sections_to_dcl_file(valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('mypath')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
+        let document = r#"
+template something
+  create
+    echo
+      my-field not-a-path
+        "#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let err = sections_to_dcl_file(valid_sections).expect_err("it should err");
+        assert!(err.message.starts_with("failed to parse json path query ('not-a-path')"), "it was {}", err.message);
+        assert_eq!(err.span.start.line, 4);
+    }
+
+    #[test]
+    fn can_parse_multiple_arg_transforms() {
+        let document = r#"
+template something
+  create
+    echo
+      ... $.input.mypath
+      ! some-field
+      other-field $.input.thing
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dcl = sections_to_dcl_file(valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates[0].create.cli_commands[0].arg_transforms.len(), 3);
+    }
+
+    #[test]
+    fn can_parse_multiple_commands_in_a_transition() {
+        let document = r#"
+template something
+  create
+    echo
+    cat
+    ls
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dcl = sections_to_dcl_file(valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
+    }
+
+    #[test]
+    fn can_parse_multiple_commands_with_multiple_arg_transforms_each() {
+        let document = r#"
+template something
+  create
+    echo
+       ... $.input
+       ! some-field
+    cat
+       ! this
+       ! that
+    ls
+       this $.input.this
+       that $.input.that
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dcl = sections_to_dcl_file(valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
+        assert_eq!(dcl.templates[0].create.cli_commands[0].arg_transforms.len(), 2);
+        assert_eq!(dcl.templates[0].create.cli_commands[1].arg_transforms.len(), 2);
+        assert_eq!(dcl.templates[0].create.cli_commands[2].arg_transforms.len(), 2);
     }
 }
 
