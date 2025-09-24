@@ -433,6 +433,37 @@ mod test {
     }
 
     #[test]
+    fn body_line_positions_tracked_around_comments() {
+        let document = r#"
+line1
+  body starts on line2
+  # line3 is a comment, skipped
+  line4 has content # and then a comment that is dropped
+  # multi line comment
+  # is skipped
+  # ...
+  line8
+"#;
+        let mut sections = parse_document_to_sections(document);
+        assert_eq!(sections.len(), 1);
+        let mut section = sections.remove(0).expect("should be a valid document");
+        assert_eq!(section.typ, "line1");
+        assert_eq!(section.parameters, None);
+        let line = section.body.remove(0);
+        assert_eq!(line, "body starts on line2");
+        assert_eq!(line.line, 2);
+        assert_eq!(line.col, 2);
+        let line = section.body.remove(0);
+        assert_eq!(line, "line4 has content ");
+        assert_eq!(line.line, 4);
+        assert_eq!(line.col, 2);
+        let line = section.body.remove(0);
+        assert_eq!(line, "line8");
+        assert_eq!(line.line, 8);
+        assert_eq!(line.col, 2);
+    }
+
+    #[test]
     fn can_parse_multiple_sections() {
         let document = 
             "sectionA\n   e\n   b\n\nsectionB parameter\n  something here\n  123\n\nsectionC\n\ta\n\tc\n\tb\n\n\n\n";
