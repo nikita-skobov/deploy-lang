@@ -7,9 +7,23 @@ pub struct StrAtLine<'a> {
     pub col: usize,
 }
 
+/// owned version of StrAtLine
+#[derive(Debug, Default, Clone)]
+pub struct StringAtLine {
+    pub s: String,
+    pub line: usize,
+    pub col: usize,
+}
+
 impl<'a> Display for StrAtLine<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.s)
+    }
+}
+
+impl Display for StringAtLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.s)
     }
 }
 
@@ -111,6 +125,48 @@ impl<'a> Iterator for AsciiWhitespaceIter<'a> {
 }
 
 impl<'a> StrAtLine<'a> {
+    pub fn to_owned(&self) -> StringAtLine {
+        StringAtLine { s: self.s.to_string(), line: self.line, col: self.col }
+    }
+    pub fn trim(&self) -> StrAtLine<'a> {
+        let mut start_index = 0;
+        let mut num_chars_removed_from_start = 0;
+        for (index, char) in self.s.char_indices() {
+            start_index = index;
+            if !char.is_ascii_whitespace() {
+                break;
+            }
+            num_chars_removed_from_start += 1;
+        }
+        let mut end_index = None;
+        for (index, char) in self.s.char_indices().rev() {
+            if !char.is_ascii_whitespace() {
+                break;
+            }
+            end_index = Some(index);
+        }
+        let end_index = match end_index {
+            None if start_index == 0 => return StrAtLine {
+                s: self.s,
+                line: self.line,
+                col: self.col,
+            },
+            None => usize::MAX,
+            Some(i) => i,
+        };
+        let s = unsafe {
+            if end_index == usize::MAX {
+                self.s.get_unchecked(start_index..)
+            } else {
+                self.s.get_unchecked(start_index..end_index)
+            }
+        };
+        StrAtLine {
+            s,
+            line: self.line,
+            col: self.col + num_chars_removed_from_start,
+        }
+    }
     pub fn split_once<S: Splittable>(&self, s: S) -> Option<(StrAtLine<'a>, StrAtLine<'a>)> {
         s.split_once(self)
     }
@@ -158,6 +214,17 @@ impl<'a> PartialEq<&'a str> for &StrAtLine<'a> {
     }
 }
 
+impl PartialEq<&str> for StringAtLine {
+    fn eq(&self, other: &&str) -> bool {
+        self.s == *other
+    }
+}
+impl PartialEq<&str> for &StringAtLine {
+    fn eq(&self, other: &&str) -> bool {
+        self.s == *other
+    }
+}
+
 pub struct LineCounterIterator<'a, I: Iterator<Item = &'a str>> {
     iter: I,
     line: usize,
@@ -198,100 +265,9 @@ impl<'a, I: Iterator<Item = &'a str>> Iterator for LineCounterIterator<'a, I> {
     }
 }
 
-pub struct PeekableLineCount<I: Iterator> {
-    iter: I,
-    /// Remember a peeked value, even if it was None.
-    peeked: Option<Option<I::Item>>,
-    counter: usize,
-}
-
-impl<I: Iterator> PeekableLineCount<I> {
-    pub fn new(iter: I) -> PeekableLineCount<I> {
-        Self::new_with_start_line(iter, 0)
-    }
-    pub fn new_with_start_line(iter: I, start_at: usize) -> PeekableLineCount<I> {
-        PeekableLineCount { iter, peeked: None, counter: start_at }
-    }
-}
-
-impl<I: Iterator> Iterator for PeekableLineCount<I> {
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<I::Item> {
-        let res = match self.peeked.take() {
-            Some(v) => v,
-            None => self.iter.next(),
-        };
-        if res.is_some() {
-            self.counter += 1;
-        }
-        res
-    }
-}
-
-impl<I: Iterator> PeekableLineCount<I> {
-    pub fn peek(&mut self) -> Option<&I::Item> {
-        let iter = &mut self.iter;
-        self.peeked.get_or_insert_with(|| iter.next()).as_ref()
-    }
-    pub fn line_index(&self) -> usize {
-        self.counter
-    }
-    /// returns the index of the last line, the index of the line
-    /// that was just returned from the prior .next() call.
-    /// if .next() has not been called once, this returns 0
-    pub fn last_line_index(&self) -> usize {
-        if self.counter > 0 {
-            self.counter - 1
-        } else {
-            0
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn can_count_lines_advanced() {
-        let document = r#"line0
-line1
-line2
-line3"#;
-        let lines = document.lines();
-        let mut peekable_lines = PeekableLineCount::new(lines);
-        assert_eq!(peekable_lines.line_index(), 0);
-        assert_eq!(peekable_lines.last_line_index(), 0);
-        assert_eq!(peekable_lines.peek(), Some("line0").as_ref());
-        // no lines have been advanced yet:
-        assert_eq!(peekable_lines.line_index(), 0);
-        assert_eq!(peekable_lines.last_line_index(), 0);
-        assert_eq!(peekable_lines.peek(), Some("line0").as_ref());
-        assert_eq!(peekable_lines.line_index(), 0);
-        assert_eq!(peekable_lines.next(), Some("line0"));
-        assert_eq!(peekable_lines.line_index(), 1);
-        assert_eq!(peekable_lines.last_line_index(), 0);
-
-        assert_eq!(peekable_lines.peek(), Some("line1").as_ref());
-        assert_eq!(peekable_lines.line_index(), 1);
-        assert_eq!(peekable_lines.last_line_index(), 0);
-        assert_eq!(peekable_lines.next(), Some("line1"));
-        assert_eq!(peekable_lines.line_index(), 2);
-        assert_eq!(peekable_lines.last_line_index(), 1);
-        assert_eq!(peekable_lines.next(), Some("line2"));
-        assert_eq!(peekable_lines.next(), Some("line3"));
-        assert_eq!(peekable_lines.line_index(), 4);
-        assert_eq!(peekable_lines.last_line_index(), 3);
-        // nothing more to peek/advance, should not go past 4:
-        assert_eq!(peekable_lines.peek(), None);
-        assert_eq!(peekable_lines.line_index(), 4);
-        assert_eq!(peekable_lines.next(), None);
-        assert_eq!(peekable_lines.next(), None);
-        assert_eq!(peekable_lines.line_index(), 4);
-        assert_eq!(peekable_lines.line_index(), 4);
-        assert_eq!(peekable_lines.last_line_index(), 3);
-    }
 
     #[test]
     fn can_get_line_of_substr() {

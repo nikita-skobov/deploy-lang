@@ -1,4 +1,4 @@
-use crate::{parse::{line_count::{PeekableLineCount, StrAtLine}, Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{line_count::StrAtLine, Section, SpannedDiagnostic}, DclFile};
 
 pub const SECTION_TYPE: &str = "template";
 
@@ -81,7 +81,7 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
     let mut out = TemplateSection::default();
     out.template_name = template_name;
     // parse the various sub-sections. each sub-section should have no indentation
-    let mut body_iter = PeekableLineCount::new_with_start_line(section.body.iter(), section.start_line);
+    let mut body_iter: std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>> = section.body.iter().peekable();
     loop {
         let line = match body_iter.next() {
             Some(l) => l,
@@ -91,7 +91,7 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         if line.s.starts_with("create") {
             parse_lines_to_create_transition(&mut out, &line, &mut body_iter)?;
         } else {
-            let line_index = body_iter.line_index();
+            let line_index = line.line;
             let diag = SpannedDiagnostic::new(
                 format!("expected transition section 'create' instead found '{}'", line), line_index, 999);
             return Err(diag);
@@ -104,12 +104,12 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
 
 pub fn parse_lines_to_create_transition<'a>(
     template_section: &mut TemplateSection,
-    _current_line: &StrAtLine<'a>,
-    lines: &mut PeekableLineCount<std::slice::Iter<'_, StrAtLine<'a>>>
+    current_line: &StrAtLine<'a>,
+    lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
 ) -> Result<(), SpannedDiagnostic> {
     // can only have 1 create subsection:
     if template_section.create_was_set {
-        let line_index = lines.last_line_index();
+        let line_index = current_line.line;
         let diag = SpannedDiagnostic::new(format!("templates cannot have multiple create subsections"), line_index, 999);
         return Err(diag);
     }
@@ -119,7 +119,7 @@ pub fn parse_lines_to_create_transition<'a>(
     let first_command = match first_command {
         Some(c) => c,
         None => {
-            return Err(SpannedDiagnostic::new(format!("unexpected end of transition. must have at least 1 command"), lines.line_index(), 999));
+            return Err(SpannedDiagnostic::new(format!("unexpected end of transition. must have at least 1 command"), current_line.line, 999));
         }
     };
     let mut commands = vec![first_command];
@@ -150,7 +150,7 @@ fn get_prefix(s: &str) -> String {
 }
 
 pub fn parse_command<'a>(
-    lines: &mut PeekableLineCount<std::slice::Iter<'_, StrAtLine<'a>>>,
+    lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
 ) -> Result<Option<CliCommand>, SpannedDiagnostic> {
     let (command_line, indent_prefix) = match lines.peek() {
         Some(l) => {
@@ -164,7 +164,7 @@ pub fn parse_command<'a>(
                 return Ok(None)
             }
             // its the command line: take it off the iterator:
-            let out = l.to_string();
+            let out = l.to_owned();
             let _ = lines.next();
             (out, indent_prefix)
         },
@@ -172,7 +172,7 @@ pub fn parse_command<'a>(
             return Ok(None);
         }
     };
-    let command_line = command_line.trim();
+    let command_line = command_line.s.trim();
     let (command, prefix_args) = match command_line.split_once(' ') {
         Some((l, r)) => (l, r),
         None => (command_line, ""),
@@ -188,7 +188,7 @@ pub fn parse_command<'a>(
                 let current_prefix = get_prefix(l.s);
                 if current_prefix.len() > indent_prefix.len() {
                     // take it off the iterator:
-                    let out = l.s.trim().to_string();
+                    let out = l.trim();
                     let _ = lines.next();
                     out
                 } else {
@@ -200,11 +200,11 @@ pub fn parse_command<'a>(
         
         match arg_transform_line.split_once(' ') {
             Some((left, right)) => {
-                match left {
+                match left.s {
                     "..." => {
-                        let path_query = jsonpath_rust::parser::parse_json_path(right)
+                        let path_query = jsonpath_rust::parser::parse_json_path(right.s)
                             .map_err(|e| {
-                                let line_index = lines.line_index();
+                                let line_index = arg_transform_line.line;
                                 SpannedDiagnostic::new(format!("failed to parse json path query ('{}') of destructure arg transform: {:?}", right, e), line_index, 999)
                             })?;
                         arg_transforms.push(ArgTransform::Destructure(path_query));
@@ -213,9 +213,9 @@ pub fn parse_command<'a>(
                         arg_transforms.push(ArgTransform::Remove(right.trim().to_string()));
                     }
                     field_name => {
-                        let path_query = jsonpath_rust::parser::parse_json_path(right)
+                        let path_query = jsonpath_rust::parser::parse_json_path(right.s)
                             .map_err(|e| {
-                                let line_index = lines.line_index();
+                                let line_index = arg_transform_line.line;
                                 SpannedDiagnostic::new(format!("failed to parse json path query ('{}') of add arg transform: {:?}", right, e), line_index, 999)
                             })?;
                         arg_transforms.push(ArgTransform::Add(field_name.trim().to_string(), path_query));
@@ -223,7 +223,7 @@ pub fn parse_command<'a>(
                 }
             }
             None => {
-                let line_index = lines.last_line_index();
+                let line_index = arg_transform_line.line;
                 return Err(SpannedDiagnostic::new(format!("invalid arg transform. must start with '...' '!' or a field name, instead found '{}'", arg_transform_line), line_index, 999));
             }
         }
