@@ -1,11 +1,11 @@
-use crate::{parse::{line_count::StrAtLine, Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{line_count::{StrAtLine, StringAtLine}, Section, SpannedDiagnostic}, DclFile};
 
 pub const SECTION_TYPE: &str = "template";
 
 #[derive(Debug, PartialEq, Default)]
 pub struct TemplateSection {
     /// a unique identifier for this template
-    pub template_name: String,
+    pub template_name: StringAtLine,
     /// a template must have a create subsection. it is the only required
     /// subsection
     pub create: Transition,
@@ -30,10 +30,10 @@ pub struct Transition {
 #[derive(Debug, PartialEq)]
 pub struct CliCommand {
     /// name of the command to be ran
-    pub command: String,
+    pub command: StringAtLine,
     /// the first args that are always to be added to the command
     /// these should be defined statically in the dcl file
-    pub prefix_args: Vec<String>,
+    pub prefix_args: Vec<StringAtLine>,
     pub arg_transforms: Vec<ArgTransform>,
 }
 
@@ -54,12 +54,12 @@ pub enum ArgTransform {
     /// represented in .dcl file by "! field-name"
     /// this transformation removes the field from the arg set, if present
     /// if the arg set does not have the field, it is a no-op
-    Remove(String),
+    Remove(StringAtLine),
     /// represented in .dcl file by "field-name $.query"
     /// this transform takes the provided json path query
     /// evaluates it from the resource object, and sets the result value to the field
     /// of the given name
-    Add(String, jsonpath_rust::parser::model::JpQuery),
+    Add(StringAtLine, jsonpath_rust::parser::model::JpQuery),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,12 +74,12 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
             let diag = SpannedDiagnostic::new(e.to_string(), section.start_line, SECTION_TYPE.len());
             return diag
         })?;
-    let template_name = template_name.trim().to_string();
-    if template_name.is_empty() {
+    let template_name = template_name.trim();
+    if template_name.s.is_empty() {
         return Err(SpannedDiagnostic::new("must have a template name".to_string(), section.start_line, SECTION_TYPE.len()));
     }
     let mut out = TemplateSection::default();
-    out.template_name = template_name;
+    out.template_name = template_name.to_owned();
     // parse the various sub-sections. each sub-section should have no indentation
     let mut body_iter: std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>> = section.body.iter().peekable();
     loop {
@@ -172,13 +172,13 @@ pub fn parse_command<'a>(
             return Ok(None);
         }
     };
-    let command_line = command_line.s.trim();
+    let command_line = command_line.trim();
     let (command, prefix_args) = match command_line.split_once(' ') {
         Some((l, r)) => (l, r),
-        None => (command_line, ""),
+        None => (command_line, Default::default()),
     };
-    let command = command.trim().to_string();
-    let prefix_args: Vec<String> = prefix_args.split_ascii_whitespace().map(|x| x.to_string()).collect();
+    let command = command.trim().to_owned();
+    let prefix_args: Vec<_> = prefix_args.split_ascii_whitespace().map(|x| x.to_owned()).collect();
     let mut arg_transforms = vec![];
     loop {
         // keep peeking the next line, if its
@@ -209,14 +209,14 @@ pub fn parse_command<'a>(
                         arg_transforms.push(ArgTransform::Destructure(path_query));
                     }
                     "!" => {
-                        arg_transforms.push(ArgTransform::Remove(right.trim().to_string()));
+                        arg_transforms.push(ArgTransform::Remove(right.trim().to_owned()));
                     }
-                    field_name => {
+                    _field_name => {
                         let path_query = jsonpath_rust::parser::parse_json_path(right.s)
                             .map_err(|e| {
                                 SpannedDiagnostic::from_str_at_line(right, format!("failed to parse json path query ('{}') of add arg transform: {:?}", right, e))
                             })?;
-                        arg_transforms.push(ArgTransform::Add(field_name.trim().to_string(), path_query));
+                        arg_transforms.push(ArgTransform::Add(left.trim().to_owned(), path_query));
                     }
                 }
             }

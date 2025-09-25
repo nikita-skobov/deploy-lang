@@ -8,7 +8,7 @@ pub struct StrAtLine<'a> {
 }
 
 /// owned version of StrAtLine
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct StringAtLine {
     pub s: String,
     pub line: usize,
