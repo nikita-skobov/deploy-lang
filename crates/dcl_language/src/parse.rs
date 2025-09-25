@@ -165,6 +165,8 @@ pub fn parse_document_to_sections_with_logger<'a>(
     let mut lines: LineCounterIterator<'a, Lines<'a>> = LineCounterIterator::new(document.lines());
     while let Some(line) = lines.next() {
         if line.s.is_empty() { continue; }
+        // ignore empty whitespace lines:
+        if line.s.chars().all(|c: char| c.is_ascii_whitespace()) { continue; }
         if line.s.starts_with(|c: char| c.is_ascii_alphabetic()) {
             // start of section: parse it
             let section = match parse_section_starting_with_line(line, &mut lines) {
@@ -410,6 +412,22 @@ mod test {
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e ", "b"]);
         assert_eq!(sections.len(), 0);
+    }
+
+    #[test]
+    fn section_parsing_allows_whitespace_in_empty_line() {
+        let document = r#"
+this is a section
+
+# the following line has a lot of extra spaces:
+                          
+# the following line has a lot of extra tabs:
+									
+"#;
+        let sections = parse_document_to_sections(document);
+        for res in sections {
+            assert!(res.is_ok(), "it errored: {:?}", res);
+        }
     }
 
     #[test]
