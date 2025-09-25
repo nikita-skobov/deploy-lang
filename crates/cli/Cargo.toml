@@ -6,3 +6,4 @@ edition.workspace = true
 
 [dependencies]
 dcl_language = { workspace = true }
+cli_engine = { workspace = true }
