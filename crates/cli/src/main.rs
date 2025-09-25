@@ -17,13 +17,20 @@ fn main() {
         let error_s = if err_diagnostics.len() == 1 { "error" } else { "errors" };
         eprintln!("Found {} {} in {}:", err_diagnostics.len(), error_s, dcl_file_path);
         for err in err_diagnostics {
-            println!("Line {}:", err.span.start.line);
-            println!("{}", err.message);
-            println!("");
+            eprintln!("Line {}:", err.span.start.line);
+            eprintln!("{}\n", err.message);
         }
         std::process::exit(1);
     }
 
-    let dcl = dcl_language::parse::sections_to_dcl_file(filtered_sections).expect("invalid dcl sections");
+    let dcl = match dcl_language::parse::sections_to_dcl_file(filtered_sections) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Found 1 error in {}:", dcl_file_path);
+            eprintln!("Line {}:", e.span.start.line);
+            eprintln!("{}\n", e.message);
+            std::process::exit(1);
+        }
+    };
     println!("{:#?}", dcl);
 }
