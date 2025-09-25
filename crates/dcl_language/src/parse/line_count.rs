@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::CharIndices};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct StrAtLine<'a> {
     pub s: &'a str,
     pub line: usize,

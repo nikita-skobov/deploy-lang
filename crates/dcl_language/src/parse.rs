@@ -89,12 +89,21 @@ impl SpannedDiagnostic {
     /// returns a default diagnostic with error set, and with
     /// the start/end to be assumed on the same line, with the provided ending column,
     /// and the starting column assumed to be 0.
-    pub fn new(err: String, line: usize, end_column: usize) -> Self {
+    pub fn new<S: AsRef<str>>(err: S, line: usize, end_column: usize) -> Self {
         let mut out = Self::default();
-        out.message = err;
+        out.message = err.as_ref().to_string();
         out.span.start.line = line;
         out.span.end.line = line;
         out.span.end.column = end_column;
+        out
+    }
+    pub fn from_str_at_line<'a, S: AsRef<str>>(s: StrAtLine<'a>, message: S) -> Self {
+        let mut out = Self::default();
+        out.message = message.as_ref().to_string();
+        out.span.start.line = s.line;
+        out.span.end.line = s.line;
+        out.span.start.column = s.col;
+        out.span.end.column = s.col + s.s.chars().count();
         out
     }
 }

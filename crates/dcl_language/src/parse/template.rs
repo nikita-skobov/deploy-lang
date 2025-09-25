@@ -204,8 +204,7 @@ pub fn parse_command<'a>(
                     "..." => {
                         let path_query = jsonpath_rust::parser::parse_json_path(right.s)
                             .map_err(|e| {
-                                let line_index = arg_transform_line.line;
-                                SpannedDiagnostic::new(format!("failed to parse json path query ('{}') of destructure arg transform: {:?}", right, e), line_index, 999)
+                                SpannedDiagnostic::from_str_at_line(right, format!("failed to parse json path query ('{}') of destructure arg transform: {:?}", right, e))
                             })?;
                         arg_transforms.push(ArgTransform::Destructure(path_query));
                     }
@@ -215,8 +214,7 @@ pub fn parse_command<'a>(
                     field_name => {
                         let path_query = jsonpath_rust::parser::parse_json_path(right.s)
                             .map_err(|e| {
-                                let line_index = arg_transform_line.line;
-                                SpannedDiagnostic::new(format!("failed to parse json path query ('{}') of add arg transform: {:?}", right, e), line_index, 999)
+                                SpannedDiagnostic::from_str_at_line(right, format!("failed to parse json path query ('{}') of add arg transform: {:?}", right, e))
                             })?;
                         arg_transforms.push(ArgTransform::Add(field_name.trim().to_string(), path_query));
                     }
@@ -249,6 +247,8 @@ template something
         let err = sections_to_dcl_file(valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('mypath')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
+        assert_eq!(err.span.start.column, 10);
+        assert_eq!(err.span.end.column, 16);
         let document = r#"
 template something
   create
@@ -260,6 +260,8 @@ template something
         let err = sections_to_dcl_file(valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('not-a-path')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
+        assert_eq!(err.span.start.column, 15);
+        assert_eq!(err.span.end.column, 25);
     }
 
     #[test]
