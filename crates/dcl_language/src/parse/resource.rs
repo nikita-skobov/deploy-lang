@@ -21,11 +21,11 @@ pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         .map_err(|e| {
             SpannedDiagnostic::new(e.to_string(), section.start_line, SECTION_TYPE.len())
         })?;
-    let first_line_len = SECTION_TYPE.len() + params.len() + 1;
+    let first_line_len = SECTION_TYPE.len() + params.s.chars().count() + 1;
     let (template_name, resource_name) = match params.split_once("(") {
         Some((l, r)) => {
             let resource_name = r.trim();
-            if !resource_name.ends_with(")") {
+            if !resource_name.s.ends_with(")") {
                 return Err(SpannedDiagnostic::new("resource name must be inside parentheses".to_string(), section.start_line, first_line_len));
             }
             let mut resource_name = resource_name.to_string();

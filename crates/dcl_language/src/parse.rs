@@ -47,8 +47,8 @@ impl IndentaionCharacter {
 
 #[derive(Debug)]
 pub struct Section<'a> {
-    pub typ: &'a str,
-    pub parameters: Option<&'a str>,
+    pub typ: StrAtLine<'a>,
+    pub parameters: Option<StrAtLine<'a>>,
     pub indentation_char: IndentaionCharacter,
     pub indentation_count: usize,
     pub body: Vec<StrAtLine<'a>>,
@@ -131,7 +131,7 @@ pub fn sections_to_dcl_file_with_logger<'a>(
 ) -> Result<DclFile, SpannedDiagnostic> {
     let mut out = DclFile::default();
     for section in sections {
-        match section.typ {
+        match section.typ.s {
             state::SECTION_TYPE => {
                 state::parse_state_section(&mut out, &section)?;
             },
@@ -264,8 +264,8 @@ pub fn parse_section_starting_with_line<'a>(
             return Ok(Section {
                 start_line: typ.line,
                 end_line: typ.line,
-                typ: typ.s,
-                parameters: parameters.map(|p| p.s),
+                typ: typ,
+                parameters: parameters,
                 indentation_char: IndentaionCharacter::Space,
                 indentation_count: 0,
                 body: Vec::new(),
@@ -315,8 +315,8 @@ pub fn parse_section_starting_with_line<'a>(
     // the fact we're here suggests body was not empty, but to be safe we deafult to end_line: 0
     let end_line = body.last().map(|l| l.line).unwrap_or(0);
     Ok(Section {
-        typ: typ.s,
-        parameters: parameters.map(|p| p.s),
+        typ: typ,
+        parameters,
         indentation_char,
         indentation_count,
         body,
@@ -388,7 +388,7 @@ mod test {
         assert_eq!(sections.len(), 1);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e", "b"]);
@@ -402,7 +402,7 @@ mod test {
         assert_eq!(sections.len(), 1);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["create", "  b", "  c", "    d"]);
@@ -416,7 +416,7 @@ mod test {
         assert_eq!(sections.len(), 1);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e ", "b"]);
@@ -446,13 +446,13 @@ this is a section
         assert_eq!(sections.len(), 2);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["a"]);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionB");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["b"]);
@@ -475,7 +475,7 @@ line1
         assert_eq!(sections.len(), 1);
         let mut section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "line1");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         let line = section.body.remove(0);
         assert_eq!(line, "body starts on line2");
         assert_eq!(line.line, 2);
@@ -498,19 +498,19 @@ line1
         assert_eq!(sections.len(), 3);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e", "b"]);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionB");
-        assert_eq!(section.parameters, Some("parameter"));
+        assert_eq!(section.parameters.map(|x| x.s), Some("parameter"));
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 2);
         assert_eq!(section.body, vec!["something here", "123"]);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionC");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["a", "c", "b"]);
@@ -525,7 +525,7 @@ line1
         assert_eq!(sections.len(), 3);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), ' ');
         assert_eq!(section.indentation_count, 3);
         assert_eq!(section.body, vec!["e", "b"]);
@@ -533,7 +533,7 @@ line1
         assert_eq!(err, "body must start with 2 characters of ' '");
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionC");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 1);
         assert_eq!(section.body, vec!["a", "c", "b"]);
@@ -548,17 +548,17 @@ line1
         assert_eq!(sections.len(), 3);
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionA");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_count, 0);
         assert!(section.body.is_empty());
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionB");
-        assert_eq!(section.parameters, Some("parameter(1 2 3)"));
+        assert_eq!(section.parameters.map(|x| x.s), Some("parameter(1 2 3)"));
         assert_eq!(section.indentation_count, 0);
         assert!(section.body.is_empty());
         let section = sections.remove(0).expect("should be a valid document");
         assert_eq!(section.typ, "sectionC");
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.indentation_count, 0);
         assert!(section.body.is_empty());
         assert_eq!(sections.len(), 0);
@@ -613,7 +613,7 @@ line1
         assert_eq!(section.typ, "sectionA");
         assert_eq!(section.indentation_char.as_character(), '\t');
         assert_eq!(section.indentation_count, 2);
-        assert_eq!(section.parameters, None);
+        assert!(section.parameters.is_none());
         assert_eq!(section.body, vec!["💙 hello", "something"]);
         assert_eq!(sections.len(), 0);
     }
