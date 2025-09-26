@@ -10,3 +10,4 @@ str_at_line = { workspace = true }
 [dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+assert_matches = "1.5.0"
