@@ -1,10 +1,16 @@
+
+
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
 
-    #[test]
-    #[ignore = "this test assumes you have the minefield test case repository cloned already and is adjacent to the root workspace"]
-    fn run_all_minefield_tests() {
+    /// runs through all the test file cases in JSONTestSuite
+    /// ignoring any of the files that start with i_ and
+    /// loads them as a string (ignoring any invalid utf8 strings)
+    /// and then calls the provided function with the json test case
+    /// and the function returns Ok() if parsing succeeds, or an error otherwise.
+    /// this function then panics if the expected result doesnt match the parsing result
+    fn test_all_json_cases(f: fn(String) -> Result<(), String>) {
         let mut root_workspace_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         // out 1 level and into the crates directory:
         root_workspace_path.pop();
@@ -30,23 +36,41 @@ mod test {
                 continue;
             }
             let contents = std::fs::read(dir_entry.path()).expect("failed to read test case contents");
-            let json_value = serde_json::from_slice::<serde_json::Value>(&contents);
+            let contents_utf8 = match String::from_utf8(contents) {
+                Ok(o) => o,
+                Err(_) => {
+                    println!("SKIP {} not valid utf8", file_name);
+                    continue;
+                }
+            };
+            let json_value = f(contents_utf8);
             match json_value {
                 Ok(_) => {
                     if first_char == 'y' {
                         println!("OK {}", file_name);
                     } else {
-                        println!("ER {} expected failure but it parsed", file_name);
+                        panic!("ER {} expected failure but it parsed", file_name);
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     if first_char == 'n' {
                         println!("OK {}", file_name);
                     } else {
-                        println!("ER {} expected parse but it failed", file_name);
+                        panic!("ER {} expected parse but it failed. parse error: {}", file_name, e);
                     }
                 }
             }
         }
+    }
+
+    fn parse_json_serde(json_str: String) -> Result<(), String> {
+        let _ = serde_json::from_str::<serde_json::Value>(&json_str).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "this test assumes you have the minefield test case repository cloned already and is adjacent to the root workspace"]
+    fn run_all_minefield_tests_serde() {
+        test_all_json_cases(parse_json_serde);
     }
 }
