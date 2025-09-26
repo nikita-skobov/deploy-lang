@@ -1,4 +1,6 @@
-use crate::{parse::{line_count::{StrAtLine, StringAtLine}, Section, SpannedDiagnostic}, DclFile};
+use str_at_line::{StrAtLine, StringAtLine};
+
+use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
 
 pub const SECTION_TYPE: &str = "template";
 

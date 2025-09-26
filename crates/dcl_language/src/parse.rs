@@ -14,12 +14,13 @@
 
 use std::str::Lines;
 
-pub mod line_count;
 pub mod state;
 pub mod template;
 pub mod resource;
 
-use crate::{parse::line_count::{LineCounterIterator, StrAtLine}, DclFile};
+use str_at_line::{LineCounterIterator, StrAtLine};
+
+use crate::DclFile;
 
 
 pub const COMMENT_CHAR: char = '#';
