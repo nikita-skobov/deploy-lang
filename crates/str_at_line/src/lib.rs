@@ -1,4 +1,4 @@
-use std::{fmt::Display, str::CharIndices};
+use std::{fmt::Display, hash::Hash, str::CharIndices};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StrAtLine<'a> {
@@ -8,11 +8,17 @@ pub struct StrAtLine<'a> {
 }
 
 /// owned version of StrAtLine
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StringAtLine {
     pub s: String,
     pub line: usize,
     pub col: usize,
+}
+
+impl Hash for StringAtLine {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.s.hash(state);
+    }
 }
 
 impl<'a> Display for StrAtLine<'a> {

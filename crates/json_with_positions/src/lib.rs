@@ -18,6 +18,21 @@ pub enum Number {
     Int(i64),
 }
 
+impl Number {
+    pub fn as_float(&self) -> f64 {
+        match self {
+            Number::Float(f) => *f,
+            Number::Int(i) => *i as f64
+        }
+    }
+    pub fn as_int(&self) -> i64 {
+        match self {
+            Number::Float(f) => *f as i64,
+            Number::Int(i) => *i,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub line: usize,
@@ -108,6 +123,141 @@ impl<'a, I: Iterator<Item = StrAtLine<'a>>> Iterator for CharIterator<'a, I> {
 
 pub type PeekableCharIterator<'a> = std::iter::Peekable<CharIterator<'a, LineCounterIterator<'a, Lines<'a>>>>;
 
+pub fn parse_json_number(
+    char_iter: &mut PeekableCharIterator,
+    first_char: CharPosition
+) -> Result<Number, String> {
+    let mut has_decimal = false;
+    let mut sequence = String::from(first_char.c);
+    loop {
+        let next_char = match char_iter.peek() {
+            Some(c) => {
+                // if its numeric, or decimal we can accept it:
+                if c.c.is_ascii_digit() || c.c == '.' {
+                    let out = *c;
+                    let _ = char_iter.next();
+                    out
+                } else {
+                    // reached a non-number. dont take it off the iterator
+                    // instead return the sequence we've parsed so far
+                    break;
+                }
+            }
+            None => {
+                break;
+            }
+        };
+        if next_char.c == '.' {
+            has_decimal = true;
+        }
+        sequence.push(next_char.c);
+    }
+    if has_decimal {
+        let f = sequence.parse::<f64>().map_err(|e| format!("failed to parse json numeric value as number: {:?}", e))?;
+        return Ok(Number::Float(f))
+    }
+    let i = sequence.parse::<i64>().map_err(|e| format!("failed to parse json numeric value as number: {:?}", e))?;
+    Ok(Number::Int(i))
+}
+
+pub fn parse_json_string(
+    char_iter: &mut PeekableCharIterator,
+    first_quote: CharPosition,
+) -> Result<StringAtLine, String> {
+    let line = first_quote.pos.line;
+    let col = first_quote.pos.column;
+    let mut last_char = first_quote.c;
+    let mut out_s = String::new();
+    loop {
+        let next_char = char_iter.next().ok_or("ran out of characters parsing json string")?;
+        if last_char == '\\' {
+            // pop the last character and insert the correct
+            // unescaped character:
+            out_s.pop();
+            let char_to_add = match next_char.c {
+                't' => '\t',
+                'b' => 	'\x08',
+                'f' => '\x0c',
+                '"' => '"',
+                '\\' => '\\',
+                'n' => '\n',
+                'r' => '\r',
+                c => return Err(format!("invalid escape character '\\{}'", c)),
+            };
+            out_s.push(char_to_add);
+            last_char = char_to_add;
+            continue;
+        }
+        if next_char.c == '"' {
+            break;
+        }
+        out_s.push(next_char.c);
+        last_char = next_char.c;
+    }
+    Ok(StringAtLine {
+        s: out_s,
+        line,
+        col
+    })
+}
+
+pub fn parse_json_object(
+    char_iter: &mut PeekableCharIterator,
+    _open_brace: CharPosition,
+) -> Result<HashMap<StringAtLine, Value>, String> {
+    let mut out = HashMap::new();
+    loop {
+        let peeked_char = char_iter.peek().ok_or("ran out of characters parsing json object")?;
+        if peeked_char.c.is_ascii_whitespace() {
+            let _ = char_iter.next();
+            continue;
+        }
+        if peeked_char.c == '}' {
+            let _ = char_iter.next();
+            break;
+        }
+        // it must be assumed to be a quote char:
+        let quote_char = *peeked_char;
+        let _ = char_iter.next();
+        if quote_char.c != '"' {
+            return Err(format!("json object key must be a string, instead found '{}'", quote_char.c));
+        }
+        let key = parse_json_string(char_iter, quote_char)?;
+        // ignore whitespace until we get to a colon character
+        let colon_char = loop {
+            let next_char = char_iter.next().ok_or("ran out of characters parsing json object")?;
+            if next_char.c.is_ascii_whitespace() {
+                let _ = char_iter.next();
+                continue;
+            }
+            break next_char
+        };
+        if colon_char.c != ':' {
+            return Err(format!("json object key must be followed by a colon, instead found '{}'", colon_char.c));
+        }
+        // now we can parse until we get a complete value:
+        let value = parse_json_value_from_iter(char_iter)?;
+        out.insert(key, value);
+        // ignore whitespace and capture the comma before going to the next iteration:
+        loop {
+            let peeked_char = char_iter.peek().ok_or("ran out of characters parsing json object")?;
+            if peeked_char.c.is_ascii_whitespace() {
+                let _ = char_iter.next();
+                continue;
+            }
+            if peeked_char.c == ',' {
+                let _ = char_iter.next();
+                break;
+            }
+            // anything else, we break without capturing it
+            // so that the next iteration of the outer loop
+            // can error, or if its a } can exit
+            break;
+        }
+    }
+    Ok(out)
+}
+
 pub fn parse_json_value_from_iter(char_iter: &mut PeekableCharIterator) -> Result<Value, String> {
     loop {
         let peeked_char = char_iter.peek().ok_or("ran out of characters")?;
@@ -122,7 +272,11 @@ pub fn parse_json_value_from_iter(char_iter: &mut PeekableCharIterator) -> Resul
         };
         match current_char.c {
             // parse object
-            '{' => todo!(),
+            '{' => {
+                let pos = current_char.pos;
+                return parse_json_object(char_iter, current_char)
+                    .map(|val| Value::Object { pos, val })
+            }
             // parse array
             '[' => {
                 let pos = current_char.pos;
@@ -185,11 +339,29 @@ pub fn parse_json_value_from_iter(char_iter: &mut PeekableCharIterator) -> Resul
                 return Ok(Value::Bool { pos, val: false })
             }
             // parse null
-            'n' => todo!(),
+            'n' => {
+                let pos = current_char.pos;
+                let expected = ['u', 'l', 'l'];
+                for exp_c in expected {
+                    let c = char_iter.next().unwrap_or_default();
+                    if c.c != exp_c {
+                        return Err(format!("expected '{}' when parsing null value. instead found '{}'", exp_c, c.c));
+                    }
+                }
+                return Ok(Value::Null { pos, val: () })
+            },
             // parse string
-            '"' => todo!(),
+            '"' => {
+                let pos = current_char.pos;
+                return parse_json_string(char_iter, current_char)
+                    .map(|val| Value::String { pos, val })
+            }
             // parse number
-            '-' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => todo!(),
+            '-' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
+                let pos = current_char.pos;
+                return parse_json_number(char_iter, current_char)
+                    .map(|val| Value::Number { pos, val })
+            }
             invalid_c => {
                 return Err(format!("invalid character '{}'", invalid_c))
             },
@@ -207,6 +379,168 @@ mod test {
     use assert_matches::assert_matches;
     use std::path::PathBuf;
     use super::*;
+    
+    #[test]
+    fn can_parse_objects() {
+        let document = "{}";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert!(val.is_empty());
+        });
+
+        let document = r#"{"key":"val"}"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, mut val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.len(), 1);
+            for (key, val) in val.drain() {
+                assert_eq!(key.s, "key");
+                assert_matches!(val, Value::String { pos, val } => {
+                    assert_eq!(val.s, "val");
+                    assert_eq!(pos.line, 0);
+                    assert_eq!(pos.column, 7);
+                });
+            }
+        });
+
+        let document = r#"{"key":"val","zz":{}}"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, mut val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.len(), 2);
+            let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+            vals.sort_by(|a, b| a.0.s.cmp(&b.0.s));
+            let next = vals.remove(0);
+            assert_eq!(next.0.s, "key");
+            assert_matches!(next.1, Value::String { val, .. } => {
+                assert_eq!(val.s, "val");
+            });
+            let next = vals.remove(0);
+            assert_eq!(next.0.s, "zz");
+            assert_eq!(next.0.col, 13);
+            assert_matches!(next.1, Value::Object { pos, val } => {
+                assert!(val.is_empty());
+                assert_eq!(pos.column, 18);
+            });
+        });
+
+        let document = r#"
+        {
+          "key":"val",
+          "zz":{}
+        }"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, mut val } => {
+            assert_eq!(pos.line, 1);
+            assert_eq!(pos.column, 8);
+            assert_eq!(val.len(), 2);
+            let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+            vals.sort_by(|a, b| a.0.s.cmp(&b.0.s));
+            let next = vals.remove(0);
+            assert_eq!(next.0.s, "key");
+            assert_matches!(next.1, Value::String { val, .. } => {
+                assert_eq!(val.s, "val");
+            });
+            let next = vals.remove(0);
+            assert_eq!(next.0.s, "zz");
+            assert_eq!(next.0.col, 10);
+            assert_matches!(next.1, Value::Object { pos, val } => {
+                assert!(val.is_empty());
+                assert_eq!(pos.column, 15);
+            });
+        });
+
+        let document = r#"{"key":false}"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, mut val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.len(), 1);
+            for (key, val) in val.drain() {
+                assert_eq!(key.s, "key");
+                assert_matches!(val, Value::Bool { pos, val } => {
+                    assert_eq!(val, false);
+                    assert_eq!(pos.line, 0);
+                    assert_eq!(pos.column, 7);
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn can_parse_numbers() {
+        let document = "0";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Number { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.as_int(), 0);
+        });
+
+        let document = "-10";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Number { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.as_int(), -10);
+        });
+
+        let document = "-1.2";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Number { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.as_float(), -1.2);
+        });
+    }
+
+    #[test]
+    fn can_parse_null() {
+        let document = "null";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Null { pos, .. } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+        });
+
+        let document = "\n   null";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Null { pos, .. } => {
+            assert_eq!(pos.line, 1);
+            assert_eq!(pos.column, 3);
+        });
+    }
+
+    #[test]
+    fn can_parse_strings() {
+        let document = r#""""#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::String { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert_eq!(val.s, "");
+        });
+
+        let document = r#" "hello""#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::String { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 1);
+            assert_eq!(val.s, "hello");
+        });
+
+        let document = r#" "t\"in\tner quote\"""#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::String { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 1);
+            assert_eq!(val.s, "t\"in\tner quote\"");
+        });
+    }
 
     #[test]
     fn can_parse_json_arrays() {
