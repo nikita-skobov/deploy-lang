@@ -33,7 +33,7 @@ fn main_or_err(
         return Err(err_diagnostics);
     }
 
-    let dcl = dcl_language::parse::sections_to_dcl_file(filtered_sections)
+    let dcl = dcl_language::parse::sections_to_dcl_file(&filtered_sections)
         .map_err(|e| vec![e])?;
 
     cli_engine::load_state(&dcl).map_err(|e| vec![e])?;

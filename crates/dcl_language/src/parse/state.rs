@@ -45,7 +45,7 @@ state
   file hello.txt"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(sections).unwrap();
+        let dcl = sections_to_dcl_file(&sections).unwrap();
         assert_eq!(dcl.state, Some(StateSection { file: "hello.txt".to_string() }));
     }
 
@@ -56,7 +56,7 @@ state
   otherthing hello.txt"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let diag = sections_to_dcl_file(sections).expect_err("dsa");
+        let diag = sections_to_dcl_file(&sections).expect_err("dsa");
         assert_eq!(diag.span.start.line, 1);
         assert_eq!(diag.span.end.line, 2);
         assert_eq!(diag.message, "state section missing 'file' option in its body");
@@ -73,7 +73,7 @@ state
 "#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let diag = sections_to_dcl_file(sections).expect_err("dsa");
+        let diag = sections_to_dcl_file(&sections).expect_err("dsa");
         assert_eq!(diag.span.start.line, 4);
         assert_eq!(diag.span.end.line, 5);
         assert_eq!(diag.message, "cannot have multiple state sections");

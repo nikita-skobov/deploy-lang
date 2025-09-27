@@ -246,7 +246,7 @@ template something
         "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let err = sections_to_dcl_file(valid_sections).expect_err("it should err");
+        let err = sections_to_dcl_file(&valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('mypath')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
         assert_eq!(err.span.start.column, 10);
@@ -259,7 +259,7 @@ template something
         "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let err = sections_to_dcl_file(valid_sections).expect_err("it should err");
+        let err = sections_to_dcl_file(&valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('not-a-path')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
         assert_eq!(err.span.start.column, 15);
@@ -278,7 +278,7 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(valid_sections).expect("it should not err");
+        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
         assert_eq!(dcl.templates[0].create.cli_commands[0].arg_transforms.len(), 3);
     }
 
@@ -293,7 +293,7 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(valid_sections).expect("it should not err");
+        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
         assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
     }
 
@@ -314,7 +314,7 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(valid_sections).expect("it should not err");
+        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
         assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
         assert_eq!(dcl.templates[0].create.cli_commands[0].arg_transforms.len(), 2);
         assert_eq!(dcl.templates[0].create.cli_commands[1].arg_transforms.len(), 2);

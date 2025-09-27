@@ -80,7 +80,7 @@ resource some_template(my_name)
   {"hello":"world"}"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(sections).unwrap();
+        let dcl = sections_to_dcl_file(&sections).unwrap();
         assert_eq!(dcl.resources.len(), 1);
         assert_eq!(dcl.resources[0].resource_name, "my_name");
         assert_eq!(dcl.resources[0].template_name, "some_template");
@@ -103,7 +103,7 @@ resource other_template(other_resource)
 "#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let mut dcl = sections_to_dcl_file(sections).unwrap();
+        let mut dcl = sections_to_dcl_file(&sections).unwrap();
         assert_eq!(dcl.resources.len(), 2);
         let resource = dcl.resources.remove(0);
         assert_eq!(resource.resource_name, "my_name");
@@ -126,7 +126,7 @@ resource some_template()
   {"hello":"world"}"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let err = sections_to_dcl_file(sections).expect_err("it should err");
+        let err = sections_to_dcl_file(&sections).expect_err("it should err");
         assert_eq!(err.message, "resource missing name");
         assert_eq!(err.span.start.line, 1);
         assert_eq!(err.span.end.line, 1);

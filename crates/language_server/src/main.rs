@@ -82,12 +82,14 @@ impl<'a> Logger for CodeLogger<'a> {
     }
 }
 
-/// given the current document, generate all diagnostics that should be emitted.
-/// this represents the current "state" of the diagnostics. whatever the server returns
-/// here, is what the client will show, so if the user previously had diagnostic errors,
-/// then they fixed them, this should return an empty vec of diagnostics, causing the client
-/// to remove past errors
-fn generate_diagnostics_from_current_document<'a>(document: &'a str, connection: &Connection) -> Vec<Diagnostic> {
+fn check_dcl_file<'a>(diagnostics: &mut Vec<Diagnostic>, valid_sections: &Vec<Section<'a>>, connection: &Connection) {
+    let clg = CodeLogger { connection };
+    if let Err(e) = dcl_language::parse::sections_to_dcl_file_with_logger(valid_sections, clg) {
+        diagnostics.push(spanned_diag_to_lsp_diag(e));
+    }
+}
+
+fn split_sections<'a>(document: &'a str, connection: &Connection) -> (Vec<Diagnostic>, Vec<Section<'a>>) {
     let clg = CodeLogger { connection };
     let sections = dcl_language::parse::parse_document_to_sections_with_logger(document, clg.clone());
     let mut out = vec![];
@@ -103,12 +105,7 @@ fn generate_diagnostics_from_current_document<'a>(document: &'a str, connection:
         let diag = spanned_diag_to_lsp_diag(e);
         out.push(diag);
     }
-    // now with the valid sections, try to parse/validate as a Dcl file:
-    // TODO: sections_to_dcl_file should support multiple diagnostics, not just 1 error
-    if let Err(e) = dcl_language::parse::sections_to_dcl_file_with_logger(valid_sections, clg) {
-        out.push(spanned_diag_to_lsp_diag(e));
-    }
-    out
+    (out, valid_sections)
 }
 
 pub fn handle_completion_request_ex<'a>(
@@ -213,6 +210,7 @@ fn main_loop(
     params: serde_json::Value,
 ) -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     let mut known_docs: HashMap<Url, String> = HashMap::new();
+    let mut parsed_docs: HashMap<Url, Vec<Section>> = HashMap::new();
     let _init: InitializeParams = serde_json::from_value(params)?;
     for msg in &connection.receiver {
         match msg {
@@ -237,8 +235,17 @@ fn main_loop(
                     let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
                     let uri = params.text_document.uri;
                     let new_document = params.content_changes.first().map(|x| x.text.as_str()).unwrap_or_default();
+                    parsed_docs = HashMap::new();
                     known_docs.insert(uri.clone(), new_document.to_string());
-                    let diagnostics = generate_diagnostics_from_current_document(new_document, &connection);
+                    let diagnostics = if let Some(s) = known_docs.get(&uri) {
+                        let (mut diagnostics, valid_sections) = split_sections(s, &connection);
+                        check_dcl_file(&mut diagnostics, &valid_sections, &connection);
+                        parsed_docs.insert(uri.clone(), valid_sections);
+                        diagnostics
+                    } else {
+                        // should be unreachable since we just inserted into known_docs
+                        vec![]
+                    };
                     let params = PublishDiagnosticsParams {
                         uri,
                         diagnostics: diagnostics,

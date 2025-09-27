@@ -131,7 +131,7 @@ pub fn consume_until_empty<'a, I>(
 }
 
 pub fn sections_to_dcl_file_with_logger<'a>(
-    sections: Vec<Section<'a>>,
+    sections: &Vec<Section<'a>>,
     mut _logger: impl Logger,
 ) -> Result<DclFile, SpannedDiagnostic> {
     let mut out = DclFile::default();
@@ -159,7 +159,7 @@ pub fn sections_to_dcl_file_with_logger<'a>(
 /// after calling `parse_document_to_sections` you filter out the errors and pass
 /// the successfully parsed sections to this function, and it parses generic Sections into
 /// concrete Sections of a DclFile, discarding any unknown sections
-pub fn sections_to_dcl_file<'a>(sections: Vec<Section<'a>>) -> Result<DclFile, SpannedDiagnostic> {
+pub fn sections_to_dcl_file<'a>(sections: &Vec<Section<'a>>) -> Result<DclFile, SpannedDiagnostic> {
     sections_to_dcl_file_with_logger(sections, ())
 }
 
