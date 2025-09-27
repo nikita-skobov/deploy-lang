@@ -68,73 +68,69 @@ pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
     Ok(())
 }
 
-// #[cfg(test)]
-// mod test {
-//     use crate::parse::{parse_document_to_sections, sections_to_dcl_file};
+#[cfg(test)]
+mod test {
+    use crate::parse::{parse_document_to_sections, sections_to_dcl_file};
+    use json_with_positions::Value;
 
-//     use super::*;
+    #[test]
+    fn can_parse_resource_sections() {
+        let document = r#"
+resource some_template(my_name)
+  {"hello":"world"}"#;
+        let mut sections = parse_document_to_sections(document);
+        let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dcl = sections_to_dcl_file(sections).unwrap();
+        assert_eq!(dcl.resources.len(), 1);
+        assert_eq!(dcl.resources[0].resource_name, "my_name");
+        assert_eq!(dcl.resources[0].template_name, "some_template");
+        assert_eq!(dcl.resources[0].input.clone().to_serde_json_value(), serde_json::json!({"hello":"world"}));
+    }
 
-//     #[test]
-//     fn can_parse_resource_sections() {
-//         let document = r#"
-// resource some_template(my_name)
-//   {"hello":"world"}"#;
-//         let mut sections = parse_document_to_sections(document);
-//         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-//         let dcl = sections_to_dcl_file(sections).unwrap();
-//         assert_eq!(dcl.resources.len(), 1);
-//         assert_eq!(dcl.resources[0].resource_name, "my_name");
-//         assert_eq!(dcl.resources[0].template_name, "some_template");
-//         assert_eq!(dcl.resources[0].input.clone().to_serde_json_value(), serde_json::json!({"hello":"world"}));
-//     }
+    #[test]
+    fn can_parse_resource_sections_with_dynamic_json_path_queries() {
+        let document = r#"
+resource some_template(my_name)
+  {
+    "hello": $.other_resource.output.thing
+  }
 
-//     #[test]
-//     fn can_parse_resource_sections_with_dynamic_json_path_queries() {
-//         let document = r#"
-// resource some_template(my_name)
-//   {
-//     "hello": $.other_resource.output.thing
-//   }
+resource other_template(other_resource)
+  {
+    "a":"b"
+  }
 
-// resource other_template(other_resource)
-//   {
-//     "a":"b"
-//   }
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let mut dcl = sections_to_dcl_file(sections).unwrap();
+        assert_eq!(dcl.resources.len(), 2);
+        let resource = dcl.resources.remove(0);
+        assert_eq!(resource.resource_name, "my_name");
+        assert_eq!(resource.template_name, "some_template");
+        let val = &resource.input["hello"];
+        match val {
+            Value::JsonPath { val, ..  } => assert_eq!(val.s, "$.other_resource.output.thing"),
+            _ => panic!("it should be a path query")
+        }
+        let resource = dcl.resources.remove(0);
+        assert_eq!(resource.resource_name, "other_resource");
+        assert_eq!(resource.template_name, "other_template");
+        assert_eq!(resource.input.to_serde_json_value(), serde_json::json!({"a":"b"}));
+    }
 
-// "#;
-//         let mut sections = parse_document_to_sections(document);
-//         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-//         let mut dcl = sections_to_dcl_file(sections).unwrap();
-//         assert_eq!(dcl.resources.len(), 2);
-//         let resource = dcl.resources.remove(0);
-//         assert_eq!(resource.resource_name, "my_name");
-//         assert_eq!(resource.template_name, "some_template");
-//         let obj = match resource.input {
-//             DynamicValue::Object(o) => o,
-//             _ => panic!("it should be an object at the root level"),
-//         };
-//         match &obj["hello"] {
-//             DynamicValue::PathQuery(q) => assert_eq!(q, "$.other_resource.output.thing"),
-//             _ => panic!("it should be a path query"),
-//         }
-//         let resource = dcl.resources.remove(0);
-//         assert_eq!(resource.resource_name, "other_resource");
-//         assert_eq!(resource.template_name, "other_template");
-//         assert_eq!(resource.input.to_serde_json_value(), serde_json::json!({"a":"b"}));
-//     }
-
-//     #[test]
-//     fn should_error_for_missing_name() {
-//         let document = r#"
-// resource some_template()
-//   {"hello":"world"}"#;
-//         let mut sections = parse_document_to_sections(document);
-//         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-//         let err = sections_to_dcl_file(sections).expect_err("it should err");
-//         assert_eq!(err.message, "resource missing name");
-//         assert_eq!(err.span.start.line, 1);
-//         assert_eq!(err.span.end.line, 1);
-//         assert_eq!(err.span.start.column, 0);
-//         assert_eq!(err.span.end.column, 24);
-//     }
-// }
+    #[test]
+    fn should_error_for_missing_name() {
+        let document = r#"
+resource some_template()
+  {"hello":"world"}"#;
+        let mut sections = parse_document_to_sections(document);
+        let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let err = sections_to_dcl_file(sections).expect_err("it should err");
+        assert_eq!(err.message, "resource missing name");
+        assert_eq!(err.span.start.line, 1);
+        assert_eq!(err.span.end.line, 1);
+        assert_eq!(err.span.start.column, 0);
+        assert_eq!(err.span.end.column, 24);
+    }
+}
