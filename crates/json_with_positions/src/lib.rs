@@ -166,16 +166,17 @@ pub fn parse_json_string(
 ) -> Result<StringAtLine, String> {
     let line = first_quote.pos.line;
     let col = first_quote.pos.column;
-    let mut last_char = first_quote.c;
+    let mut last_char_is_slash = false;
     let mut out_s = String::new();
     loop {
         let next_char = char_iter.next().ok_or("ran out of characters parsing json string")?;
-        if last_char == '\\' {
+        if last_char_is_slash {
             // pop the last character and insert the correct
             // unescaped character:
             out_s.pop();
             let char_to_add = match next_char.c {
                 't' => '\t',
+                '/' => '/',
                 'b' => 	'\x08',
                 'f' => '\x0c',
                 '"' => '"',
@@ -185,14 +186,14 @@ pub fn parse_json_string(
                 c => return Err(format!("invalid escape character '\\{}'", c)),
             };
             out_s.push(char_to_add);
-            last_char = char_to_add;
+            last_char_is_slash = false;
             continue;
         }
         if next_char.c == '"' {
             break;
         }
         out_s.push(next_char.c);
-        last_char = next_char.c;
+        last_char_is_slash = next_char.c == '\\';
     }
     Ok(StringAtLine {
         s: out_s,
@@ -436,6 +437,26 @@ mod test {
     use assert_matches::assert_matches;
     use std::path::PathBuf;
     use super::*;
+
+    #[test]
+    fn can_parse_all_allowed_escapes() {
+        let document = r#"["\"\\\/\b\f\n\r\t"]"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Array { .. } => {});
+    }
+
+    #[test]
+    fn can_parse_double_escape_a() {
+        let document = r#"["\\a"]"#;
+        let v: serde_json::Value = serde_json::from_str(document).unwrap();
+        println!("{}", v[0].as_str().unwrap());
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Array { mut val, .. } => {
+            assert_matches!(val.remove(0), Value::String { val, .. } => {
+                assert_eq!(val.s, "\\a");
+            })
+        });
+    }
 
     #[test]
     fn can_parse_objects_nested() {
