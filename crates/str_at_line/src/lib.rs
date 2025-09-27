@@ -1,4 +1,4 @@
-use std::{fmt::Display, hash::Hash, str::CharIndices};
+use std::{borrow::Borrow, fmt::Display, hash::Hash, str::CharIndices};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StrAtLine<'a> {
@@ -20,6 +20,18 @@ impl Hash for StringAtLine {
         self.s.hash(state);
     }
 }
+
+impl Borrow<str> for StringAtLine {
+    fn borrow(&self) -> &str {
+        &self.s.as_str()
+    }
+}
+impl Borrow<String> for StringAtLine {
+    fn borrow(&self) -> &String {
+        &self.s
+    }
+}
+
 
 impl<'a> Display for StrAtLine<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -273,7 +285,18 @@ impl<'a, I: Iterator<Item = &'a str>> Iterator for LineCounterIterator<'a, I> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use super::*;
+
+    #[test]
+    fn can_index_hashmap_string_at_line_with_str() {
+        let mut map: HashMap<StringAtLine, String> = HashMap::new();
+        map.insert(StringAtLine { s: "abc".to_string(), line: 1, col: 2 }, "dsa".to_string());
+        assert_eq!(map["abc"], "dsa");
+        let s = format!("abc");
+        assert_eq!(map[&s], "dsa");
+    }
 
     #[test]
     fn can_get_line_of_substr() {
