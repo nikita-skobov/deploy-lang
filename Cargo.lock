@@ -144,6 +144,7 @@ dependencies = [
 name = "dcl_language"
 version = "0.1.0"
 dependencies = [
+ "json_with_positions",
  "jsonpath-rust",
  "serde",
  "serde_json",

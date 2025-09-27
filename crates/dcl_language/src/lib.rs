@@ -2,7 +2,6 @@
 
 use crate::parse::{resource::ResourceSection, state::StateSection, template::TemplateSection};
 
-pub mod dynamic_json;
 pub mod parse;
 
 #[derive(Default, Debug)]

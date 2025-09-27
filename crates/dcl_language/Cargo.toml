@@ -8,3 +8,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 jsonpath-rust = { workspace = true }
 str_at_line = { workspace = true }
+json_with_positions = { workspace = true }

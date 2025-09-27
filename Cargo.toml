@@ -14,3 +14,4 @@ serde = { version = "1.0", features = ["derive"]}
 serde_json = { version = "1.0", features = ["preserve_order"]}
 str_at_line = { path = "./crates/str_at_line" }
 jsonpath-rust = "1.0.4"
+json_with_positions = { path = "./crates/json_with_positions" }

@@ -2,7 +2,7 @@ use std::{collections::HashMap, str::{Chars, Lines}};
 
 use str_at_line::{LineCounterIterator, StrAtLine, StringAtLine};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null { pos: Position, val: () },
     Bool { pos: Position, val: bool },
@@ -15,7 +15,7 @@ pub enum Value {
     JsonPath { pos: Position, val: StringAtLine },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Number {
     Float(f64),
     Int(i64),
@@ -124,12 +124,15 @@ impl<'a, I: Iterator<Item = StrAtLine<'a>>> Iterator for CharIterator<'a, I> {
     }
 }
 
-pub type PeekableCharIterator<'a> = std::iter::Peekable<CharIterator<'a, LineCounterIterator<'a, Lines<'a>>>>;
 
-pub fn parse_json_number(
-    char_iter: &mut PeekableCharIterator,
+pub type PeekableCharIterator<'a, I> = std::iter::Peekable<CharIterator<'a, I>>;
+
+pub fn parse_json_number<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     first_char: CharPosition
-) -> Result<Number, String> {
+) -> Result<Number, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut has_decimal = false;
     let mut sequence = String::from(first_char.c);
     loop {
@@ -163,10 +166,12 @@ pub fn parse_json_number(
     Ok(Number::Int(i))
 }
 
-pub fn parse_until_closing_char(
-    char_iter: &mut PeekableCharIterator,
+pub fn parse_until_closing_char<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     closing_char: char
-) -> Result<String, String> {
+) -> Result<String, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut out = String::new();
     loop {
         let next = char_iter.next().ok_or("ran out of characters parsing json path")?;
@@ -178,9 +183,11 @@ pub fn parse_until_closing_char(
     Ok(out)
 }
 
-pub fn parse_until_non_digit(
-    char_iter: &mut PeekableCharIterator
-) -> Result<String, String> {
+pub fn parse_until_non_digit<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>
+) -> Result<String, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut out = String::new();
     loop {
         match char_iter.peek() {
@@ -198,9 +205,11 @@ pub fn parse_until_non_digit(
     Ok(out)
 }
 
-pub fn parse_bracketed_segment(
-    char_iter: &mut PeekableCharIterator
-) -> Result<String, String> {
+pub fn parse_bracketed_segment<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>
+) -> Result<String, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut out = String::new();
     let err = "ran out of characters parsing bracketed json path selector";
     let next_char = char_iter.next().ok_or(err)?;
@@ -228,10 +237,12 @@ pub fn parse_bracketed_segment(
 // i was too lazy to read the rfc closely
 // but i think its basically only certain characters are allowed
 // in shorthand selectors, so im going to say "only allow alphanumeric characters"
-pub fn parse_member_shorthand(
-    char_iter: &mut PeekableCharIterator,
+pub fn parse_member_shorthand<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     first_char: CharPosition,
-) -> Result<String, String> {
+) -> Result<String, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut out = String::new();
     if !first_char.c.is_alphanumeric() {
         return Err(format!("failed to parse json path shorthand: non alphanumeric char '{}'", first_char.c));
@@ -253,9 +264,11 @@ pub fn parse_member_shorthand(
     Ok(out)
 }
 
-pub fn parse_json_path_segment(
-    char_iter: &mut PeekableCharIterator,
-) -> Result<Option<String>, String> {
+pub fn parse_json_path_segment<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
+) -> Result<Option<String>, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut segment = String::new();
     // this isnt strictly rfc9535 compliant but i dont care
     // https://www.rfc-editor.org/rfc/rfc9535.pdf
@@ -311,10 +324,12 @@ pub fn parse_json_path_segment(
     Ok(Some(segment))
 }
 
-pub fn parse_json_path(
-    char_iter: &mut PeekableCharIterator,
+pub fn parse_json_path<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     first_dollar: CharPosition
-) -> Result<StringAtLine, String> {
+) -> Result<StringAtLine, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut out = StringAtLine {
         line: first_dollar.pos.line,
         col: first_dollar.pos.column,
@@ -326,10 +341,12 @@ pub fn parse_json_path(
     Ok(out)
 }
 
-pub fn parse_json_string(
-    char_iter: &mut PeekableCharIterator,
+pub fn parse_json_string<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     first_quote: CharPosition,
-) -> Result<StringAtLine, String> {
+) -> Result<StringAtLine, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let line = first_quote.pos.line;
     let col = first_quote.pos.column;
     let mut last_char_is_slash = false;
@@ -399,10 +416,12 @@ pub enum ValueState {
 /// at which point its returned, and is taken off the iterator.
 /// errors if runs out of characters prior to finding one_of_chars
 /// or if a character other than one_of_chars is found
-pub fn collect_whitespace_until(
-    char_iter: &mut PeekableCharIterator,
+pub fn collect_whitespace_until<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     one_of_chars: &[char]
-) -> Result<CharPosition, String> {
+) -> Result<CharPosition, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     loop {
         let next_char = char_iter.next().ok_or("ran out of characters parsing json value")?;
         if next_char.c.is_ascii_whitespace() {
@@ -415,11 +434,13 @@ pub fn collect_whitespace_until(
     }
 }
 
-pub fn parse_sequence(
-    char_iter: &mut PeekableCharIterator,
+pub fn parse_sequence<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>,
     expected_sequence: &[char],
     ret_val: Value
-) -> Result<Value, String> {
+) -> Result<Value, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     for exp_c in expected_sequence {
         let c = char_iter.next().unwrap_or_default();
         if c.c != *exp_c {
@@ -429,7 +450,11 @@ pub fn parse_sequence(
     return Ok(ret_val)
 }
 
-pub fn parse_json_value_from_iter_no_recursion(char_iter: &mut PeekableCharIterator) -> Result<Value, String> {
+pub fn parse_json_value_from_iter_no_recursion<'a, I>(
+    char_iter: &mut PeekableCharIterator<'a, I>
+) -> Result<Value, String>
+    where I: Iterator<Item = StrAtLine<'a>>
+{
     let mut parse_stack: Vec<ParseStep> = vec![ParseStep::ParseValue];
     let mut value_stack: Vec<ValueState> = vec![];
     let mut current_object: (Position, HashMap<StringAtLine, Value>) = (Position::default(), HashMap::new());
@@ -615,7 +640,7 @@ pub fn parse_json_value_from_iter_no_recursion(char_iter: &mut PeekableCharItera
 }
 
 pub fn parse_json_value<'a>(s: &'a str) -> Result<Value, String> {
-    let mut char_iter: PeekableCharIterator = char_iterator_from_str(s).peekable();
+    let mut char_iter: PeekableCharIterator<'a, _> = char_iterator_from_str(s).peekable();
     parse_json_value_from_iter_no_recursion(&mut char_iter)
 }
 
