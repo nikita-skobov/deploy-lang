@@ -183,6 +183,20 @@ pub fn parse_json_string(
                 '\\' => '\\',
                 'n' => '\n',
                 'r' => '\r',
+                'u' => {
+                    // need to look up next 4 chars as hex digits
+                    let hex_digit1 = char_iter.next().ok_or("expected hex digit after \\u")?;
+                    let hex_digit2 = char_iter.next().ok_or("expected hex digit after \\u")?;
+                    let hex_digit3 = char_iter.next().ok_or("expected hex digit after \\u")?;
+                    let hex_digit4 = char_iter.next().ok_or("expected hex digit after \\u")?;
+                    let mut s = String::with_capacity(4);
+                    s.push(hex_digit1.c);
+                    s.push(hex_digit2.c);
+                    s.push(hex_digit3.c);
+                    s.push(hex_digit4.c);
+                    let char_u32 = u32::from_str_radix(&s, 16).map_err(|_| format!("failed to parse \\u{} as escaped character", s))?;
+                    char::from_u32(char_u32).ok_or("failed to parse escaped \\u character")?
+                },
                 c => return Err(format!("invalid escape character '\\{}'", c)),
             };
             out_s.push(char_to_add);
@@ -645,6 +659,15 @@ mod test {
         assert_matches!(value, Value::Null { pos, .. } => {
             assert_eq!(pos.line, 1);
             assert_eq!(pos.column, 3);
+        });
+    }
+
+    #[test]
+    fn can_parse_escaped_control_char() {
+        let document = r#""\u0012""#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::String { val, .. } => {
+            assert_eq!(val.s, "\u{12}");
         });
     }
 
