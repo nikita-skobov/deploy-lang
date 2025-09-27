@@ -1,0 +1,3 @@
+{
+    "rust-analyzer.runnables.extraTestBinaryArgs": ["--nocapture"],
+}
