@@ -7,8 +7,8 @@ edition.workspace = true
 [dependencies]
 str_at_line = { workspace = true }
 jsonpath-rust = { workspace = true }
-
-[dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
 assert_matches = "1.5.0"

@@ -1,6 +1,12 @@
-use std::{collections::HashMap, str::{Chars, Lines}};
+use std::{collections::HashMap, ops::Index, str::{Chars, Lines}};
 
 use str_at_line::{LineCounterIterator, StrAtLine, StringAtLine};
+
+/// we cant represent a json_with_positions::Value as a serde_json::Value because of the JsonPath,
+/// so we treat JsonPaths as an object with just this one key, and the value is a string
+/// containing the json path query
+const PATH_QUERY_KEY: &str = "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__";
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -13,6 +19,94 @@ pub enum Value {
     /// not json, so in the future perhaps this crate should hide this behind
     /// a feature flag, but for my purposes, i want to support { "field": $.json.path }
     JsonPath { pos: Position, val: StringAtLine },
+}
+
+impl Value {
+    /// converts a value into a serde json value
+    pub fn to_serde_json_value(self) -> serde_json::Value {
+        convert_to_serde_value_recursively(self)
+    }
+}
+
+impl<I: ValueIndexable> Index<I> for Value {
+    type Output = Value;
+
+    fn index(&self, index: I) -> &Self::Output {
+        static NULL: &Value = &Value::Null { pos: Position { line: 0, column: 0 }, val: () };
+        index.index(self).unwrap_or(NULL)
+    }
+}
+
+pub trait ValueIndexable {
+    fn index<'a>(&self, v: &'a Value) -> Option<&'a Value>;
+}
+
+impl ValueIndexable for usize {
+    fn index<'a>(&self, v: &'a Value) -> Option<&'a Value> {
+        match v {
+            Value::Array { val, .. } => {
+                val.get(*self)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl ValueIndexable for str {
+    fn index<'a>(&self, v: &'a Value) -> Option<&'a Value> {
+        match v {
+            Value::Object { val, .. } => {
+                val.get(self)
+            }
+            _ => None,
+        }
+    }
+}
+impl ValueIndexable for &str {
+    fn index<'a>(&self, v: &'a Value) -> Option<&'a Value> {
+        match v {
+            Value::Object { val, .. } => {
+                val.get(*self)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// converts a value into a serde json value recursively, converting any
+/// json path queries to an object representation via the key `PATH_QUERY_KEY`
+pub fn convert_to_serde_value_recursively(dynamic_json_val: Value) -> serde_json::Value {
+    match dynamic_json_val {
+        Value::Null { .. } => serde_json::Value::Null,
+        Value::Bool { val, .. } => serde_json::Value::Bool(val),
+        Value::Number { val, .. } => {
+            let num = match val {
+                Number::Float(f) => serde_json::Number::from_f64(f),
+                Number::Int(i) => serde_json::Number::from_i128(i as _),
+            }.unwrap_or(serde_json::Number::from(0));
+            serde_json::Value::Number(num)
+        },
+        Value::String { val, .. } => serde_json::Value::String(val.s),
+        Value::Array { val, .. } => {
+            let mut out = Vec::with_capacity(val.len());
+            for val in val {
+                out.push(convert_to_serde_value_recursively(val));
+            }
+            serde_json::Value::Array(out)
+        }
+        Value::Object { val, .. } => {
+            let mut out = serde_json::Map::with_capacity(val.len());
+            for (key, val) in val {
+                out.insert(key.s, convert_to_serde_value_recursively(val));
+            }
+            serde_json::Value::Object(out)
+        }
+        Value::JsonPath { val, .. } => {
+            let mut out = serde_json::Map::new();
+            out.insert(PATH_QUERY_KEY.to_string(), serde_json::Value::String(val.s));
+            serde_json::Value::Object(out)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,7 +330,7 @@ pub fn parse_bracketed_segment<'a, I>(
 
 // i was too lazy to read the rfc closely
 // but i think its basically only certain characters are allowed
-// in shorthand selectors, so im going to say "only allow alphanumeric characters"
+// in shorthand selectors, so im going to say "only allow alphanumeric characters and _ and -"
 pub fn parse_member_shorthand<'a, I>(
     char_iter: &mut PeekableCharIterator<'a, I>,
     first_char: CharPosition,
@@ -251,7 +345,7 @@ pub fn parse_member_shorthand<'a, I>(
     loop {
         match char_iter.peek() {
             Some(c) => {
-                if c.c.is_alphanumeric() {
+                if c.c.is_alphanumeric() || c.c == '_' || c.c == '-' {
                     out.push(c.c);
                     let _ = char_iter.next();
                 } else {
