@@ -91,7 +91,11 @@ fn check_dcl_file<'a>(diagnostics: &mut Vec<Diagnostic>, valid_sections: &Vec<Se
 
 fn split_sections<'a>(document: &'a str, connection: &Connection) -> (Vec<Diagnostic>, Vec<Section<'a>>) {
     let clg = CodeLogger { connection };
-    let sections = dcl_language::parse::parse_document_to_sections_with_logger(document, clg.clone());
+    split_sections_with_logger(document, clg)
+}
+
+fn split_sections_with_logger<'a>(document: &'a str, logger: impl Logger) -> (Vec<Diagnostic>, Vec<Section<'a>>) {
+    let sections = dcl_language::parse::parse_document_to_sections_with_logger(document, logger);
     let mut out = vec![];
     let mut valid_sections = vec![];
     for section in sections {
@@ -306,14 +310,60 @@ fn send_log<S: AsRef<str>>(
 
 #[cfg(test)]
 mod test {
+    use lsp_types::{PartialResultParams, TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams};
+
     use super::*;
+
+    fn completion_params_with_position(
+        line: u32,
+        column: u32
+    ) -> CompletionParams {
+        CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("https://example.net").unwrap(),
+                },
+                position: Position { line: line, character: column },
+            },
+            work_done_progress_params: WorkDoneProgressParams {
+                work_done_token: None,
+            },
+            partial_result_params: PartialResultParams {
+                partial_result_token: None,
+            },
+            context: None,
+        }
+    }
 
     #[test]
     fn can_provide_completions_for_json_paths() {
         let completion_request_line = 1;
         let completion_request_column = 21;
-        let document = r#"resource something(a)
-   {"a": "b", "c": $.}"#;
-        // TODO: test the completion is emitted...
+        let other_completion_column = 36;
+        // $. at column 21
+        // $.other_resource. at column 36
+        let document = r#"resource some_template(a)
+   {"a": "b", "c": $.other_resource.}
+
+resource some_template(other_resource)
+  {"option1": null, "option2": null}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_column);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $. so it should recommend resource names, of which theres only 1 "other_resource"
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res.remove(0).label, "other_resource");
+
+        // the column is at $.other_resource. so it should recommend fields within other_resource
+        let params = completion_params_with_position(completion_request_line, other_completion_column);
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.remove(0).label, "option1");
+        assert_eq!(res.remove(0).label, "option2");
     }
 }
