@@ -115,7 +115,11 @@ impl PartialEq<&str> for SpannedDiagnostic {
     }
 }
 
-pub fn consume_until_empty<'a>(lines: &mut LineCounterIterator<'a, Lines<'a>>) -> Option<()> {
+pub fn consume_until_empty<'a, I>(
+    lines: &mut LineCounterIterator<'a, I>
+) -> Option<()>
+    where I: Iterator<Item = &'a str>,
+{
     loop {
         let line = lines.peek()?;
         if line.s.is_empty() {
@@ -167,30 +171,29 @@ impl Logger for () {
     fn log(&mut self, _log: &str) {}
 }
 
-pub fn parse_document_to_sections_with_logger<'a>(
-    document: &'a str,
-    _logger: impl Logger,
-) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
-    let mut out = vec![];
-    let mut lines: LineCounterIterator<'a, Lines<'a>> = LineCounterIterator::new(document.lines());
+/// returns None once theres no more sections to parse (ran out of lines)
+/// otherwise returns a parsed section, or a diagnostic if the section was invalid
+pub fn parse_next_section<'a, I>(
+    lines: &mut LineCounterIterator<'a, I>,
+) -> Option<Result<Section<'a>, SpannedDiagnostic>>
+    where I: Iterator<Item = &'a str>,
+{
     while let Some(line) = lines.next() {
         if line.s.is_empty() { continue; }
         // ignore empty whitespace lines:
         if line.s.chars().all(|c: char| c.is_ascii_whitespace()) { continue; }
         if line.s.starts_with(|c: char| c.is_ascii_alphabetic()) {
             // start of section: parse it
-            let section = match parse_section_starting_with_line(line, &mut lines) {
+            let section = match parse_section_starting_with_line(line, lines) {
                 Ok(o) => o,
                 Err(e) => {
-                    out.push(Err(e));
                     // must advance lines til next section, otherwise will get
                     // unnecessary errors re-parsing the same section from the middle
-                    consume_until_empty(&mut lines);
-                    continue;
+                    consume_until_empty(lines);
+                    return Some(Err(e));
                 }
             };
-            out.push(Ok(section));
-            continue;
+            return Some(Ok(section))
         }
         // must be a comment, parse and validate its a valid comment (#)
         let is_invalid = match line.split_once(COMMENT_CHAR) {
@@ -206,9 +209,21 @@ pub fn parse_document_to_sections_with_logger<'a>(
             diag.span.start.column = 0;
             diag.span.end.column = line.s.len();
             diag.message = format!("invalid line '{}' must be a section or a comment", line);
-            out.push(Err(diag));
+            return Some(Err(diag))
         }
         // otherwise its a line with a comment. can be ignored
+    }
+    None
+}
+
+pub fn parse_document_to_sections_with_logger<'a>(
+    document: &'a str,
+    _logger: impl Logger,
+) -> Vec<Result<Section<'a>, SpannedDiagnostic>> {
+    let mut out = vec![];
+    let mut lines: LineCounterIterator<'a, Lines<'a>> = LineCounterIterator::new(document.lines());
+    while let Some(section_result) = parse_next_section(&mut lines) {
+        out.push(section_result);
     }
     out
 }
@@ -217,10 +232,12 @@ pub fn parse_document_to_sections<'a>(document: &'a str) -> Vec<Result<Section<'
     parse_document_to_sections_with_logger(document, ())
 }
 
-pub fn parse_section_starting_with_line<'a>(
+pub fn parse_section_starting_with_line<'a, I>(
     first_line: StrAtLine<'a>,
-    next_lines: &mut LineCounterIterator<'a, Lines<'a>>,
-) -> Result<Section<'a>, SpannedDiagnostic> {
+    next_lines: &mut LineCounterIterator<'a, I>,
+) -> Result<Section<'a>, SpannedDiagnostic>
+    where I: Iterator<Item = &'a str>,
+{
     // let line_index = next_lines.last_line_index();
     // a section must start with a type
     // a type can be optionally followed by parameters
@@ -352,12 +369,14 @@ pub fn add_body_line<'a>(
     Ok(())
 }
 
-pub fn parse_section_body<'a>(
+pub fn parse_section_body<'a, I>(
     indentation_char: IndentaionCharacter,
     indentation_count: usize,
     first_body_line: StrAtLine<'a>,
-    next_lines: &mut LineCounterIterator<'a, Lines<'a>>,
-) -> Result<Vec<StrAtLine<'a>>, SpannedDiagnostic> {
+    next_lines: &mut LineCounterIterator<'a, I>,
+) -> Result<Vec<StrAtLine<'a>>, SpannedDiagnostic>
+    where I: Iterator<Item = &'a str>,
+{
     let mut body = vec![];
     let invalid_utf8_err = format!("invalid utf8 sequence from {}..", indentation_count);
     // get first line into body since it was already determined to be part of the body:
