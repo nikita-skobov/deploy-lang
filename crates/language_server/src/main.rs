@@ -110,26 +110,38 @@ fn main_loop(
     connection: Connection,
     params: serde_json::Value,
 ) -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+    let mut known_docs: HashMap<Url, String> = HashMap::new();
     let _init: InitializeParams = serde_json::from_value(params)?;
     for msg in &connection.receiver {
-        if let Message::Notification(notif) = msg {
-            if notif.method == "textDocument/didChange" {
-                let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
-                let uri = params.text_document.uri;
-                let new_document = params.content_changes.first().map(|x| x.text.as_str()).unwrap_or_default();
-                let diagnostics = generate_diagnostics_from_current_document(new_document, &connection);
-                let params = PublishDiagnosticsParams {
-                    uri,
-                    diagnostics: diagnostics,
-                    version: None,
-                };
-                connection.sender.send(Message::Notification(
-                    lsp_server::Notification {
-                        method: PublishDiagnostics::METHOD.to_string(),
-                        params: serde_json::to_value(params).unwrap(),
-                    }
-                )).unwrap();
-                send_log(&connection, "sending diagnostics");
+        match msg {
+            Message::Request(request) => {
+                send_log(&connection, &format!("received request: {:?}", request));
+            }
+            Message::Response(response) => {
+                send_log(&connection, &format!("unexpected response received: {:?}", response));
+            }
+            Message::Notification(notif) => {
+                if notif.method == "textDocument/didChange" {
+                    let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
+                    let uri = params.text_document.uri;
+                    let new_document = params.content_changes.first().map(|x| x.text.as_str()).unwrap_or_default();
+                    known_docs.insert(uri.clone(), new_document.to_string());
+                    let diagnostics = generate_diagnostics_from_current_document(new_document, &connection);
+                    let params = PublishDiagnosticsParams {
+                        uri,
+                        diagnostics: diagnostics,
+                        version: None,
+                    };
+                    connection.sender.send(Message::Notification(
+                        lsp_server::Notification {
+                            method: PublishDiagnostics::METHOD.to_string(),
+                            params: serde_json::to_value(params).unwrap(),
+                        }
+                    )).unwrap();
+                    send_log(&connection, "sending diagnostics");
+                } else {
+                    send_log(&connection, &format!("received unexpected notification: {}", notif.method));
+                }
             }
         }
     }
