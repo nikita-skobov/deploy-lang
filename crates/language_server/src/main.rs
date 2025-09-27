@@ -110,9 +110,8 @@ fn split_sections<'a>(document: &'a str, connection: &Connection) -> (Vec<Diagno
 
 pub fn handle_completion_request_ex<'a>(
     params: CompletionParams,
-    doc: Option<&'a String>,
+    doc: &ParsedDoc<'a>,
 ) -> Option<Vec<CompletionItem>> {
-    let doc = doc?;
     let Position { line, character } = params.text_document_position.position;
     let line_index = line as usize;
     // remember a character position is really between two characters:
@@ -121,7 +120,7 @@ pub fn handle_completion_request_ex<'a>(
     // so for us to look up the character they just typed, we'd need to get the character at index 0
     let column = character as usize;
     let char_index = if column == 0 { column } else { column - 1 };
-    let line = doc.lines().nth(line_index)?;
+    let line = doc.doc.lines().nth(line_index)?;
     let (trigger_index, trigger_character) = line.char_indices()
         .nth(char_index)?;
     // for now we'll only care about completions for json paths
@@ -149,12 +148,9 @@ pub fn handle_completion_request_ex<'a>(
     // ensure the json path is valid:
     let json_path_query = jsonpath_rust::parser::parse_json_path(&json_path).ok()?;
 
-    // now determine the section its within. parse all sections
-    // and then determine which one is the found_section:
-    // the section that the current completion request is within
+    // now determine the section its within from the already parsed sections:
     let mut found_section: Option<&Section<'a>> = None;
-    let mut document_parsed = dcl_language::parse::parse_document_to_sections(&doc);
-    let all_valid_sections: Vec<_> = document_parsed.drain(..).filter_map(|x| x.ok()).collect();
+    let all_valid_sections = &doc.parsed;
     for section in all_valid_sections.iter() {
         if line_index >= section.start_line && line_index <= section.end_line {
             found_section = Some(section);
@@ -199,10 +195,15 @@ pub fn handle_completion_request_ex<'a>(
 
 pub fn handle_completion_request<'a>(
     params: CompletionParams,
-    doc: Option<&'a String>,
+    doc: &ParsedDoc<'a>,
 ) -> Option<serde_json::Value> {
     let completion_items = handle_completion_request_ex(params, doc)?;
     serde_json::to_value(completion_items).ok()
+}
+
+pub struct ParsedDoc<'a> {
+    pub doc: &'a String,
+    pub parsed: Vec<Section<'a>>,
 }
 
 fn main_loop(
@@ -210,7 +211,7 @@ fn main_loop(
     params: serde_json::Value,
 ) -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     let mut known_docs: HashMap<Url, String> = HashMap::new();
-    let mut parsed_docs: HashMap<Url, Vec<Section>> = HashMap::new();
+    let mut parsed_docs: HashMap<Url, ParsedDoc> = HashMap::new();
     let _init: InitializeParams = serde_json::from_value(params)?;
     for msg in &connection.receiver {
         match msg {
@@ -218,8 +219,24 @@ fn main_loop(
                 send_log(&connection, &format!("received request: {:?}", request));
                 if request.method == "textDocument/completion" {
                     let params: CompletionParams = serde_json::from_value(request.params).unwrap();
-                    let doc = known_docs.get(&params.text_document_position.text_document.uri);
-                    let result = handle_completion_request(params, doc);
+                    let uri = &params.text_document_position.text_document.uri;
+                    let parsed = parsed_docs.get(uri);
+                    let parsed = if let Some(parsed) = parsed {
+                        parsed
+                    } else {
+                        match known_docs.get(&uri) {
+                            Some(s) => {
+                                let (_, valid_sections) = split_sections(s, &connection);
+                                parsed_docs.insert(uri.clone(), ParsedDoc { parsed: valid_sections, doc: s });
+                            }
+                            None => continue
+                        };
+                        match parsed_docs.get(&uri) {
+                            Some(parsed) => parsed,
+                            None => continue
+                        }
+                    };
+                    let result = handle_completion_request(params, parsed);
                     let result = if result.is_none() {
                         Some(serde_json::Value::Null)
                     } else { result };
@@ -240,7 +257,7 @@ fn main_loop(
                     let diagnostics = if let Some(s) = known_docs.get(&uri) {
                         let (mut diagnostics, valid_sections) = split_sections(s, &connection);
                         check_dcl_file(&mut diagnostics, &valid_sections, &connection);
-                        parsed_docs.insert(uri.clone(), valid_sections);
+                        parsed_docs.insert(uri.clone(), ParsedDoc { parsed: valid_sections, doc: s });
                         diagnostics
                     } else {
                         // should be unreachable since we just inserted into known_docs
