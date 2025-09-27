@@ -31,6 +31,11 @@ fn main() {
     let caps = ServerCapabilities {
         // needed to get text document notifications
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        // needed to receive textDocument/completion requests
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_string()]),
+            ..Default::default()
+        }),
         ..Default::default()
     };
 
@@ -106,6 +111,18 @@ fn generate_diagnostics_from_current_document<'a>(document: &'a str, connection:
     out
 }
 
+pub fn handle_completion_request<'a>(
+    params: CompletionParams,
+    doc: Option<&'a String>,
+) -> Option<serde_json::Value> {
+    let doc = doc?;
+    let Position { line, character } = params.text_document_position.position;
+    let line = line as usize;
+    let column = character as usize;
+
+    None
+}
+
 fn main_loop(
     connection: Connection,
     params: serde_json::Value,
@@ -116,6 +133,16 @@ fn main_loop(
         match msg {
             Message::Request(request) => {
                 send_log(&connection, &format!("received request: {:?}", request));
+                if request.method == "textDocument/completion" {
+                    let params: CompletionParams = serde_json::from_value(request.params).unwrap();
+                    let doc = known_docs.get(&params.text_document_position.text_document.uri);
+                    let result = handle_completion_request(params, doc);
+                    let result = if result.is_none() {
+                        Some(serde_json::Value::Null)
+                    } else { result };
+                    send_response(&connection, Response { id: request.id, result, error: None });
+                    continue;
+                }
             }
             Message::Response(response) => {
                 send_log(&connection, &format!("unexpected response received: {:?}", response));
