@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::error::Error;
 
 use dcl_language::parse::{Logger, SpannedDiagnostic};
-use lsp_server::{Connection, Message};
+use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
+use lsp_types::{CompletionOptions, CompletionParams, Url};
 use lsp_types::{
     Diagnostic,
     DiagnosticSeverity,
@@ -132,6 +134,13 @@ fn main_loop(
         }
     }
     Ok(())
+}
+
+fn send_response(
+    connection: &Connection,
+    resp: Response,
+) {
+    connection.sender.send(Message::Response(resp)).expect("failed to send response to client");
 }
 
 fn send_log<S: AsRef<str>>(
