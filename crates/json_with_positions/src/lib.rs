@@ -10,6 +10,9 @@ pub enum Value {
     String { pos: Position, val: StringAtLine },
     Array { pos: Position, val: Vec<Value> },
     Object { pos: Position, val: HashMap<StringAtLine, Value> },
+    /// not json, so in the future perhaps this crate should hide this behind
+    /// a feature flag, but for my purposes, i want to support { "field": $.json.path }
+    JsonPath { pos: Position, val: StringAtLine },
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +163,169 @@ pub fn parse_json_number(
     Ok(Number::Int(i))
 }
 
+pub fn parse_until_closing_char(
+    char_iter: &mut PeekableCharIterator,
+    closing_char: char
+) -> Result<String, String> {
+    let mut out = String::new();
+    loop {
+        let next = char_iter.next().ok_or("ran out of characters parsing json path")?;
+        out.push(next.c);
+        if next.c == closing_char {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+pub fn parse_until_non_digit(
+    char_iter: &mut PeekableCharIterator
+) -> Result<String, String> {
+    let mut out = String::new();
+    loop {
+        match char_iter.peek() {
+            Some(c) => {
+                if c.c.is_ascii_digit() {
+                    out.push(c.c);
+                    let _ = char_iter.next();
+                } else {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+pub fn parse_bracketed_segment(
+    char_iter: &mut PeekableCharIterator
+) -> Result<String, String> {
+    let mut out = String::new();
+    let err = "ran out of characters parsing bracketed json path selector";
+    let next_char = char_iter.next().ok_or(err)?;
+    if next_char.c == '*' {
+        out.push(next_char.c);
+    } else if next_char.c == '\'' {
+        out.push(next_char.c);
+        out.push_str(&parse_until_closing_char(char_iter, '\'')?);
+    } else if next_char.c == '"' {
+        out.push(next_char.c);
+        out.push_str(&parse_until_closing_char(char_iter, '"')?);
+    } else if next_char.c.is_ascii_digit() || next_char.c == '-' {
+        out.push(next_char.c);
+        // parse as an index: keep parsing until we get a non digit
+        out.push_str(&parse_until_non_digit(char_iter)?);
+    }
+    let closing_bracket = char_iter.next().ok_or(err)?;
+    if closing_bracket.c != ']' {
+        return Err(format!("expected closing bracket ']' instead found '{}'", closing_bracket.c));
+    }
+    out.push(closing_bracket.c);
+    Ok(out)
+}
+
+// i was too lazy to read the rfc closely
+// but i think its basically only certain characters are allowed
+// in shorthand selectors, so im going to say "only allow alphanumeric characters"
+pub fn parse_member_shorthand(
+    char_iter: &mut PeekableCharIterator,
+    first_char: CharPosition,
+) -> Result<String, String> {
+    let mut out = String::new();
+    if !first_char.c.is_alphanumeric() {
+        return Err(format!("failed to parse json path shorthand: non alphanumeric char '{}'", first_char.c));
+    }
+    out.push(first_char.c);
+    loop {
+        match char_iter.peek() {
+            Some(c) => {
+                if c.c.is_alphanumeric() {
+                    out.push(c.c);
+                    let _ = char_iter.next();
+                } else {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+pub fn parse_json_path_segment(
+    char_iter: &mut PeekableCharIterator,
+) -> Result<Option<String>, String> {
+    let mut segment = String::new();
+    // this isnt strictly rfc9535 compliant but i dont care
+    // https://www.rfc-editor.org/rfc/rfc9535.pdf
+    // after the root dollar sign, we can have either a child segment or descendant segment
+    // if its not a dot or a [ then we can exit since its not part of the path segment:
+    if let Some(peeked) = char_iter.peek() {
+        if peeked.c != '.' && peeked.c != '[' {
+            return Ok(None);
+        }
+    }
+    let next_char = char_iter.next().ok_or("ran out of characters parsing json path")?;
+    if next_char.c == '.' {
+        segment.push(next_char.c);
+        // check if the following char is a dot as well
+        // if it is, then we're parsing a descendant segment
+        if let Some(c) = char_iter.peek() {
+            if c.c == '.' {
+                let _ = char_iter.next();
+                segment.push('.');
+                // now we know to parse the next either as
+                // bracketed_segment, wildcard_selector, or member_shorthand
+                let next_char = char_iter.next().ok_or("ran out of characters parsing json path")?;
+                if next_char.c == '[' {
+                    // parse as bracketed_segment
+                    segment.push('[');
+                    segment.push_str(&parse_bracketed_segment(char_iter)?);
+                } else if next_char.c == '*' {
+                    // its a wildcard selector, just grab it and done:
+                    segment.push('*');
+                } else {
+                    // parse as member shorthand
+                    segment.push_str(&parse_member_shorthand(char_iter, next_char)?);
+                }
+            } else {
+                // its a child segment, so next must be either
+                // wildcard selector or member_shorthand
+                let next_char = char_iter.next().ok_or("ran out of characters parsing json path")?;
+                if next_char.c == '*' {
+                    segment.push('*');
+                } else {
+                    // parse as member shorthand
+                    segment.push_str(&parse_member_shorthand(char_iter, next_char)?);
+                }
+            }
+        }
+    } else if next_char.c == '[' {
+        // parse as bracketed segment
+        segment.push('[');
+        segment.push_str(&parse_bracketed_segment(char_iter)?);
+    } else {
+        return Err(format!("invalid json path character '{}' expected $. or $[", next_char.c));
+    }
+    Ok(Some(segment))
+}
+
+pub fn parse_json_path(
+    char_iter: &mut PeekableCharIterator,
+    first_dollar: CharPosition
+) -> Result<StringAtLine, String> {
+    let mut out = StringAtLine {
+        line: first_dollar.pos.line,
+        col: first_dollar.pos.column,
+        s: String::from('$'),
+    };
+    while let Some(next_segment) = parse_json_path_segment(char_iter)? {
+        out.s.push_str(&next_segment);
+    }
+    Ok(out)
+}
+
 pub fn parse_json_string(
     char_iter: &mut PeekableCharIterator,
     first_quote: CharPosition,
@@ -268,7 +434,10 @@ pub fn parse_json_value_from_iter_no_recursion(char_iter: &mut PeekableCharItera
     let mut value_stack: Vec<ValueState> = vec![];
     let mut current_object: (Position, HashMap<StringAtLine, Value>) = (Position::default(), HashMap::new());
     let mut current_array: (Position, Vec<Value>) = Default::default();
-    let valid_value_chars = ['{', '[', '"', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    let valid_value_chars = [
+        '{', '[', '"', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+        '$',
+    ];
     loop {
         if let Some(next_parse_step) = parse_stack.pop() {
             match next_parse_step {
@@ -320,6 +489,10 @@ pub fn parse_json_value_from_iter_no_recursion(char_iter: &mut PeekableCharItera
                                 value_stack.push(ValueState::PartiallyParsedArray { pos: value_start_char.pos, existing: vec![] });
                                 parse_stack.push(ParseStep::ParseValue);
                             }
+                        },
+                        '$' => {
+                            let s = parse_json_path(char_iter, value_start_char)?;
+                            value_stack.push(ValueState::FullyParsedValue(Value::JsonPath { pos: value_start_char.pos, val: s }));
                         },
                         '"' => {
                             let s = parse_json_string(char_iter, value_start_char)?;
@@ -451,6 +624,43 @@ mod test {
     use assert_matches::assert_matches;
     use std::path::PathBuf;
     use super::*;
+
+    #[test]
+    fn can_parse_json_path_queries() {
+        let cases = [
+            "$.something",
+            "$..thing",
+            "$[0]",
+            "$[100]",
+            "$[-1]",
+            "$[*]",
+            "$.o[*]",
+            "$.o['j j']['k.k']",
+            r#"$["'"]["@"]"#,
+            "$..book[2].publisher",
+            "$..*",
+            "$.store..price",
+        ];
+        for case in cases {
+            let document = format!(r#"
+        {{
+            "aquery": {case},
+            "other": 2
+        }}"#);
+            let value = parse_json_value(&document).unwrap();
+            assert_matches!(value, Value::Object { mut val, .. } => {
+                let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+                vals.sort_by(|a, b| a.0.s.cmp(&b.0.s));
+                let next = vals.remove(0);
+                assert_eq!(next.0.s, "aquery");
+                assert_matches!(next.1, Value::JsonPath { val, pos } => {
+                    assert_eq!(val.s, case);
+                    assert_eq!(pos.line, 2);
+                    assert_eq!(pos.column, 22);
+                });
+            });
+        }
+    }
 
     #[test]
     fn can_parse_all_allowed_escapes() {

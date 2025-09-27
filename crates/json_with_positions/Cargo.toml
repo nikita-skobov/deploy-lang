@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 str_at_line = { workspace = true }
+jsonpath-rust = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }

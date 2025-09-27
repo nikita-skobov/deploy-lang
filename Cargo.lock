@@ -359,6 +359,7 @@ name = "json_with_positions"
 version = "0.1.0"
 dependencies = [
  "assert_matches",
+ "jsonpath-rust",
  "serde",
  "serde_json",
  "str_at_line",
