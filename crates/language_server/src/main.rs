@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use dcl_language::parse::{Logger, SpannedDiagnostic};
+use dcl_language::parse::{Logger, Section, SpannedDiagnostic};
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
-use lsp_types::{CompletionOptions, CompletionParams, Url};
+use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, Url};
 use lsp_types::{
     Diagnostic,
     DiagnosticSeverity,
@@ -111,16 +111,101 @@ fn generate_diagnostics_from_current_document<'a>(document: &'a str, connection:
     out
 }
 
+pub fn handle_completion_request_ex<'a>(
+    params: CompletionParams,
+    doc: Option<&'a String>,
+) -> Option<Vec<CompletionItem>> {
+    let doc = doc?;
+    let Position { line, character } = params.text_document_position.position;
+    let line_index = line as usize;
+    // remember a character position is really between two characters:
+    // its the position of the cursor. so column 1 means user typed a char
+    // at the start of the line, and their cursor is currently after that first character
+    // so for us to look up the character they just typed, we'd need to get the character at index 0
+    let column = character as usize;
+    let char_index = if column == 0 { column } else { column - 1 };
+    let line = doc.lines().nth(line_index)?;
+    let (trigger_index, trigger_character) = line.char_indices()
+        .nth(char_index)?;
+    // for now we'll only care about completions for json paths
+    // TODO: support completions for filling in known template names
+    // when defining resources, language keywords like "template", "resource", etc.
+    if trigger_character != '.' {
+        return None
+    }
+    // go backwards and parse until a '$' is found, indicating a json path query
+    let mut json_path = String::with_capacity(char_index);
+    for (i, c) in line.char_indices().rev() {
+        // ignore everything including the trigger character index and after:
+        if i >= trigger_index {
+            continue;
+        }
+        json_path.insert(0, c);
+        if c == '$' {
+            break;
+        }
+    }
+    // if the dollar sign was never found its not a json path:
+    if !json_path.starts_with("$") {
+        return None;
+    }
+    // ensure the json path is valid:
+    let json_path_query = jsonpath_rust::parser::parse_json_path(&json_path).ok()?;
+
+    // now determine the section its within. parse all sections
+    // and then determine which one is the found_section:
+    // the section that the current completion request is within
+    let mut found_section: Option<&Section<'a>> = None;
+    let mut document_parsed = dcl_language::parse::parse_document_to_sections(&doc);
+    let all_valid_sections: Vec<_> = document_parsed.drain(..).filter_map(|x| x.ok()).collect();
+    for section in all_valid_sections.iter() {
+        if line_index >= section.start_line && line_index <= section.end_line {
+            found_section = Some(section);
+        }
+    }
+    // collect json object from all other resource sections:
+    let found_section = found_section?;
+    let mut dcl = dcl_language::DclFile::default();
+    for section in all_valid_sections.iter() {
+        if std::ptr::addr_eq(section, found_section) {
+            // ignore the found section
+            continue;
+        }
+        if section.typ == dcl_language::parse::resource::SECTION_TYPE {
+            let _ = dcl_language::parse::resource::parse_resource_section(&mut dcl, section);
+        }
+    }
+    // now create a json object from all of the resources that were found:
+    // TODO: need to consider performance here...
+    // might want to process the first segment in the json path out-of-band
+    // to look up the resource, and then use json path query on its input
+    let mut resource_inputs = serde_json::Map::new();
+    for resource in dcl.resources.iter() {
+        let val = resource.input.clone().to_serde_json_value();
+        resource_inputs.insert(resource.resource_name.clone(), val);
+    }
+    let all_resource_inputs = serde_json::Value::Object(resource_inputs);
+
+    let mut res = jsonpath_rust::query::js_path_process(
+        &json_path_query, &all_resource_inputs
+    ).ok()?;
+    let last = res.pop()?;
+    let val = last.val();
+    let map = val.as_object()?;
+    // return all keys of the object as valid completion items:
+    let mut completions = Vec::with_capacity(map.len());
+    for key in map.keys() {
+        completions.push(CompletionItem { label: key.clone(), ..Default::default() });
+    }
+    Some(completions)
+}
+
 pub fn handle_completion_request<'a>(
     params: CompletionParams,
     doc: Option<&'a String>,
 ) -> Option<serde_json::Value> {
-    let doc = doc?;
-    let Position { line, character } = params.text_document_position.position;
-    let line = line as usize;
-    let column = character as usize;
-
-    None
+    let completion_items = handle_completion_request_ex(params, doc)?;
+    serde_json::to_value(completion_items).ok()
 }
 
 fn main_loop(
@@ -193,4 +278,18 @@ fn send_log<S: AsRef<str>>(
             params: log,
         }
     )).expect("failed to send log notification to client");
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn can_provide_completions_for_json_paths() {
+        let completion_request_line = 1;
+        let completion_request_column = 21;
+        let document = r#"resource something(a)
+   {"a": "b", "c": $.}"#;
+        // TODO: test the completion is emitted...
+    }
 }

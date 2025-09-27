@@ -384,10 +384,12 @@ name = "language_server"
 version = "0.1.0"
 dependencies = [
  "dcl_language",
+ "jsonpath-rust",
  "lsp-server",
  "lsp-types",
  "serde",
  "serde_json",
+ "str_at_line",
 ]
 
 [[package]]
