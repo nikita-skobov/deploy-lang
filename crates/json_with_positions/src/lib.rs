@@ -201,178 +201,234 @@ pub fn parse_json_string(
     })
 }
 
-pub fn parse_json_object(
-    char_iter: &mut PeekableCharIterator,
-    _open_brace: CharPosition,
-) -> Result<HashMap<StringAtLine, Value>, String> {
-    let mut out = HashMap::new();
-    loop {
-        let peeked_char = char_iter.peek().ok_or("ran out of characters parsing json object")?;
-        if peeked_char.c.is_ascii_whitespace() {
-            let _ = char_iter.next();
-            continue;
-        }
-        if peeked_char.c == '}' {
-            let _ = char_iter.next();
-            break;
-        }
-        // it must be assumed to be a quote char:
-        let quote_char = *peeked_char;
-        let _ = char_iter.next();
-        if quote_char.c != '"' {
-            return Err(format!("json object key must be a string, instead found '{}'", quote_char.c));
-        }
-        let key = parse_json_string(char_iter, quote_char)?;
-        // ignore whitespace until we get to a colon character
-        let colon_char = loop {
-            let next_char = char_iter.next().ok_or("ran out of characters parsing json object")?;
-            if next_char.c.is_ascii_whitespace() {
-                let _ = char_iter.next();
-                continue;
-            }
-            break next_char
-        };
-        if colon_char.c != ':' {
-            return Err(format!("json object key must be followed by a colon, instead found '{}'", colon_char.c));
-        }
-        // now we can parse until we get a complete value:
-        let value = parse_json_value_from_iter(char_iter)?;
-        out.insert(key, value);
-        // ignore whitespace and capture the comma before going to the next iteration:
-        loop {
-            let peeked_char = char_iter.peek().ok_or("ran out of characters parsing json object")?;
-            if peeked_char.c.is_ascii_whitespace() {
-                let _ = char_iter.next();
-                continue;
-            }
-            if peeked_char.c == ',' {
-                let _ = char_iter.next();
-                break;
-            }
-            // anything else, we break without capturing it
-            // so that the next iteration of the outer loop
-            // can error, or if its a } can exit
-            break;
-        }
-    }
-    Ok(out)
+pub enum ParseStep {
+    ParseValue,
+    ParseObjectKey,
+    ParseArrayNext,
 }
 
-pub fn parse_json_value_from_iter(char_iter: &mut PeekableCharIterator) -> Result<Value, String> {
+#[derive(Debug)]
+pub enum ValueState {
+    FullyParsedValue(Value),
+    PartiallyParsedObject { pos: Position, existing: HashMap<StringAtLine, Value>, current_key: StringAtLine },
+    PartiallyParsedArray { pos: Position, existing: Vec<Value> },
+}
+
+/// reads characters off the char_iter until one of the characters is found,
+/// at which point its returned, and is taken off the iterator.
+/// errors if runs out of characters prior to finding one_of_chars
+/// or if a character other than one_of_chars is found
+pub fn collect_whitespace_until(
+    char_iter: &mut PeekableCharIterator,
+    one_of_chars: &[char]
+) -> Result<CharPosition, String> {
     loop {
-        let peeked_char = char_iter.peek().ok_or("ran out of characters")?;
-        let current_char = if peeked_char.c.is_ascii_whitespace() {
-            // ignore whitespace. advance iterator and try next char:
-            let _ = char_iter.next();
+        let next_char = char_iter.next().ok_or("ran out of characters parsing json value")?;
+        if next_char.c.is_ascii_whitespace() {
             continue;
-        } else {
-            let current_char = peeked_char.clone();
-            let _ = char_iter.next();
-            current_char
-        };
-        match current_char.c {
-            // parse object
-            '{' => {
-                let pos = current_char.pos;
-                return parse_json_object(char_iter, current_char)
-                    .map(|val| Value::Object { pos, val })
-            }
-            // parse array
-            '[' => {
-                let pos = current_char.pos;
-                let mut vals = vec![];
-                // keep parsing values until a ']' is found
-                'outter: loop {
-                    // check for empty arrays:
-                    if let Some(c) = char_iter.peek() {
-                        if c.c == ']' {
-                            let _ = char_iter.next();
-                            break;
+        }
+        if one_of_chars.iter().any(|c| *c == next_char.c) {
+            return Ok(next_char)
+        }
+        return Err(format!("unexpected character '{}' expecting one of {:?}", next_char.c, one_of_chars));
+    }
+}
+
+pub fn parse_sequence(
+    char_iter: &mut PeekableCharIterator,
+    expected_sequence: &[char],
+    ret_val: Value
+) -> Result<Value, String> {
+    for exp_c in expected_sequence {
+        let c = char_iter.next().unwrap_or_default();
+        if c.c != *exp_c {
+            return Err(format!("expected '{}' instead found '{}'", exp_c, c.c));
+        }
+    }
+    return Ok(ret_val)
+}
+
+pub fn parse_json_value_from_iter_no_recursion(char_iter: &mut PeekableCharIterator) -> Result<Value, String> {
+    let mut parse_stack: Vec<ParseStep> = vec![ParseStep::ParseValue];
+    let mut value_stack: Vec<ValueState> = vec![];
+    let mut current_object: (Position, HashMap<StringAtLine, Value>) = (Position::default(), HashMap::new());
+    let mut current_array: (Position, Vec<Value>) = Default::default();
+    let valid_value_chars = ['{', '[', '"', 't', 'f', 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    loop {
+        if let Some(next_parse_step) = parse_stack.pop() {
+            match next_parse_step {
+                ParseStep::ParseValue => {
+                    // collect whitespace up to the next character that determines the current value
+                    let value_start_char = collect_whitespace_until(char_iter, &valid_value_chars)?;
+                    match value_start_char.c {
+                        '{' => {
+                            let obj_next_char = collect_whitespace_until(char_iter, &['}', '"'])?;
+                            match obj_next_char.c {
+                                '}' => {
+                                    // empty object, can push it to the stack now
+                                    value_stack.push(ValueState::FullyParsedValue(Value::Object {
+                                        pos: value_start_char.pos,
+                                        val: HashMap::new(),
+                                    }));
+                                }
+                                _ => {
+                                    // must be a quote, parse it, then the colon
+                                    // then add it as partially parsed and loop to parse the value after the colon
+                                    let key = parse_json_string(char_iter, obj_next_char)?;
+                                    collect_whitespace_until(char_iter, &[':'])?;
+                                    value_stack.push(ValueState::PartiallyParsedObject {
+                                        pos: value_start_char.pos,
+                                        existing: HashMap::new(),
+                                        current_key: key
+                                    });
+                                    parse_stack.push(ParseStep::ParseValue);
+                                }
+                            }
+                        },
+                        '[' => {
+                            // collect whitespace to check if its an empty array:
+                            let peeked_char = loop {
+                                let peeked_char = char_iter.peek().ok_or("ran out of characters parsing json array")?;
+                                if peeked_char.c.is_ascii_whitespace() {
+                                    let _ = char_iter.next();
+                                    continue;
+                                }
+                                break peeked_char
+                            };
+                            if peeked_char.c == ']' {
+                                let _ = char_iter.next();
+                                // can close the array:
+                                value_stack.push(ValueState::FullyParsedValue(Value::Array { pos: value_start_char.pos, val: vec![] }));
+                                current_array = Default::default();
+                            } else {
+                                // parse the next value
+                                value_stack.push(ValueState::PartiallyParsedArray { pos: value_start_char.pos, existing: vec![] });
+                                parse_stack.push(ParseStep::ParseValue);
+                            }
+                        },
+                        '"' => {
+                            let s = parse_json_string(char_iter, value_start_char)?;
+                            value_stack.push(ValueState::FullyParsedValue(Value::String { pos: value_start_char.pos, val: s }));
+                        },
+                        't' => {
+                            let val = parse_sequence(char_iter, &['r', 'u', 'e'], Value::Bool {
+                                pos: value_start_char.pos,
+                                val: true
+                            })?;
+                            value_stack.push(ValueState::FullyParsedValue(val));
+                        },
+                        'f' => {
+                            let val = parse_sequence(char_iter, &['a', 'l', 's', 'e'], Value::Bool {
+                                pos: value_start_char.pos,
+                                val: false
+                            })?;
+                            value_stack.push(ValueState::FullyParsedValue(val));
+                        },
+                        'n' => {
+                            let val = parse_sequence(char_iter, &['u', 'l', 'l'], Value::Null {
+                                pos: value_start_char.pos,
+                                val: (),
+                            })?;
+                            value_stack.push(ValueState::FullyParsedValue(val));
+                        },
+                        // the rest are all parse as number:
+                        _ => {
+                            let pos = value_start_char.pos;
+                            let val = parse_json_number(char_iter, value_start_char)?;
+                            value_stack.push(ValueState::FullyParsedValue(Value::Number { pos, val }));
                         }
                     }
-                    let val = parse_json_value_from_iter(char_iter)?;
-                    vals.push(val);
-                    // consume whitespace up to a ','
-                    loop {
-                        if let Some(c) = char_iter.peek() {
-                            if c.c.is_ascii_whitespace() {
-                                char_iter.next();
-                                continue;
-                            }
-                            if c.c == ',' {
-                                // consume the comma, then break out to parse the next
-                                // json value
-                                char_iter.next();
-                                break;
-                            }
-                            if c.c == ']' {
-                                // break out of the outer loop. we're done parsing values
-                                break 'outter;
-                            }
-                            return Err(format!("unexpected character '{}' while parsing json array", c.c));
-                        } else { break; }
+                },
+                ParseStep::ParseArrayNext => {
+                    // current_array is the array we're parsing. try to get its next value if there is one
+                    // or close the array if a ] is found before a ,
+                    let c = collect_whitespace_until(char_iter, &[']', ','])?;
+                    match c.c {
+                        ']' => {
+                            // array is done, add it to the stack
+                            value_stack.push(ValueState::FullyParsedValue(Value::Array { pos: current_array.0, val: current_array.1 }));
+                            current_array = Default::default();
+                        }
+                        _ => {
+                            // its a comma. so we know to parse the next as a value:
+                            value_stack.push(ValueState::PartiallyParsedArray {
+                                pos: current_array.0,
+                                existing: current_array.1,
+                            });
+                            current_array = Default::default();
+                            parse_stack.push(ParseStep::ParseValue);
+                        }
                     }
                 }
-                return Ok(Value::Array { pos, val: vals })
-            },
-            // parse true
-            't' => {
-                let pos = current_char.pos;
-                let expected = ['r', 'u', 'e'];
-                for exp_c in expected {
-                    let c = char_iter.next().unwrap_or_default();
-                    if c.c != exp_c {
-                        return Err(format!("expected '{}' when parsing boolean value 'true'. instead found '{}'", exp_c, c.c));
+                ParseStep::ParseObjectKey => {
+                    // current_object is the object we're parsing, try to get its next key if there is one, or
+                    // close the object if a } is found first:
+                    let c = collect_whitespace_until(char_iter, &['}', ','])?;
+                    match c.c {
+                        '}' => {
+                            // object is done, add it to the stack
+                            value_stack.push(ValueState::FullyParsedValue(Value::Object { pos: current_object.0, val: current_object.1 }));
+                            current_object = Default::default();
+                        }
+                        _ => {
+                            // otherwise it was a comma, so now we know to parse the next key of the
+                            // object, but first: get the first quote char
+                            let quote_char = collect_whitespace_until(char_iter, &['"'])?;
+                            let key = parse_json_string(char_iter, quote_char)?;
+                            collect_whitespace_until(char_iter, &[':'])?;
+                            value_stack.push(ValueState::PartiallyParsedObject {
+                                pos: current_object.0,
+                                existing: current_object.1,
+                                current_key: key
+                            });
+                            current_object = Default::default();
+                            parse_stack.push(ParseStep::ParseValue);
+                        }
                     }
                 }
-                return Ok(Value::Bool { pos, val: true })
-            },
-            // parse false
-            'f' => {
-                let pos = current_char.pos;
-                let expected = ['a', 'l', 's', 'e'];
-                for exp_c in expected {        
-                    let c = char_iter.next().unwrap_or_default();
-                    if c.c != exp_c {
-                        return Err(format!("expected '{}' when parsing boolean value 'false'. instead found '{}'", exp_c, c.c));
-                    }
-                }
-                return Ok(Value::Bool { pos, val: false })
             }
-            // parse null
-            'n' => {
-                let pos = current_char.pos;
-                let expected = ['u', 'l', 'l'];
-                for exp_c in expected {
-                    let c = char_iter.next().unwrap_or_default();
-                    if c.c != exp_c {
-                        return Err(format!("expected '{}' when parsing null value. instead found '{}'", exp_c, c.c));
+            continue;
+        }
+        // no more steps from the stack, check the value stack and condense into one final value:
+        let last_value = value_stack.pop().ok_or("ran out of json values on stack state")?;
+        if let Some(prior_value) = value_stack.pop() {
+            match prior_value {
+                ValueState::FullyParsedValue(value) => {
+                    return Err(format!("expected to merge json value {:?} but prior stack item is fully parsed", value));
+                },
+                ValueState::PartiallyParsedObject { pos, mut existing, current_key } => {
+                    if let ValueState::FullyParsedValue(val) = last_value {
+                        existing.insert(current_key, val);
+                        current_object = (pos, existing);
+                        parse_stack.push(ParseStep::ParseObjectKey);
+                    } else {
+                        return Err(format!("expected to merge json value {:?} but its not fully parsed", last_value));
                     }
                 }
-                return Ok(Value::Null { pos, val: () })
-            },
-            // parse string
-            '"' => {
-                let pos = current_char.pos;
-                return parse_json_string(char_iter, current_char)
-                    .map(|val| Value::String { pos, val })
+                ValueState::PartiallyParsedArray { pos, mut existing } => {
+                    if let ValueState::FullyParsedValue(val) = last_value {
+                        existing.push(val);
+                        current_array = (pos, existing);
+                        parse_stack.push(ParseStep::ParseArrayNext);
+                    } else {
+                        return Err(format!("expected to merge json value {:?} but its not fully parsed", last_value));
+                    }
+                }
             }
-            // parse number
-            '-' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                let pos = current_char.pos;
-                return parse_json_number(char_iter, current_char)
-                    .map(|val| Value::Number { pos, val })
+        } else {
+            // theres only one item on the value stack, check if its the final value that can be returned:
+            if let ValueState::FullyParsedValue(val) = last_value {
+                return Ok(val)
+            } else {
+                return Err(format!("final value on value stack is partial"));
             }
-            invalid_c => {
-                return Err(format!("invalid character '{}'", invalid_c))
-            },
         }
     }
 }
 
 pub fn parse_json_value<'a>(s: &'a str) -> Result<Value, String> {
     let mut char_iter: PeekableCharIterator = char_iterator_from_str(s).peekable();
-    parse_json_value_from_iter(&mut char_iter)
+    parse_json_value_from_iter_no_recursion(&mut char_iter)
 }
 
 #[cfg(test)]
@@ -380,6 +436,54 @@ mod test {
     use assert_matches::assert_matches;
     use std::path::PathBuf;
     use super::*;
+
+    #[test]
+    fn can_parse_objects_nested() {
+        let document = "{}";
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            assert!(val.is_empty());
+        });
+
+        let document = r#"{"a":{}}"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, mut val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 0);
+            let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+            vals.sort_by(|a, b| a.0.s.cmp(&b.0.s));
+            let next = vals.remove(0);
+            assert_eq!(next.0.s, "a");
+            assert_matches!(next.1, Value::Object { val, .. } => {
+                assert!(val.is_empty());
+            });
+            assert!(val.is_empty());
+        });
+
+        let document = r#" {"a":{"b": { "c"  : {"d":{}}, "cprime": "..."  }}}"#;
+        let value = parse_json_value(document).unwrap();
+        assert_matches!(value, Value::Object { pos, mut val } => {
+            assert_eq!(pos.line, 0);
+            assert_eq!(pos.column, 1);
+            let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+            assert_matches!(vals.remove(0).1, Value::Object { mut val, .. } => {
+                let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+                assert_matches!(vals.remove(0).1, Value::Object { mut val, .. } => {
+                    println!("{:#?}", val);
+                    let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
+                    vals.sort_by(|a, b| a.0.s.cmp(&b.0.s));
+                    let next_val = vals.remove(0);
+                    assert_eq!(next_val.0.s, "c");
+                    assert_eq!(next_val.0.col, 14);
+                    let next_val = vals.remove(0);
+                    assert_eq!(next_val.0.s, "cprime");
+                    assert_eq!(next_val.0.col, 31);
+                });
+            });
+        });
+    }
     
     #[test]
     fn can_parse_objects() {
@@ -503,7 +607,7 @@ mod test {
     fn garbage_number() {
         let doc = "[-1x]";
         let err = parse_json_value(doc).expect_err("it should err");
-        assert_eq!(err, "unexpected character 'x' while parsing json array");
+        assert!(err.starts_with("unexpected character 'x'"), "it was {}", err);
     }
 
     #[test]
@@ -710,10 +814,6 @@ and this is line1"#;
                     continue;
                 }
             };
-            if file_name == "n_structure_open_array_object.json" || file_name == "n_structure_100000_opening_arrays.json" {
-                println!("SKIPPING STACK OVERFLOW TEST {}", file_name);
-                continue;
-            }
             println!("starting {}", file_name);
             let now = std::time::Instant::now();
             let json_value = f(contents_utf8);
