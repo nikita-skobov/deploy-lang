@@ -4,7 +4,7 @@ use std::error::Error;
 use dcl_language::parse::{Logger, Section, SpannedDiagnostic};
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
-use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, Url};
+use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, InsertReplaceEdit, TextEdit, Url};
 use lsp_types::{
     Diagnostic,
     DiagnosticSeverity,
@@ -116,6 +116,7 @@ pub fn handle_completion_request_ex<'a>(
     params: CompletionParams,
     doc: &ParsedDoc<'a>,
 ) -> Option<Vec<CompletionItem>> {
+    let original_pos = params.text_document_position.position.clone();
     let Position { line, character } = params.text_document_position.position;
     let line_index = line as usize;
     // remember a character position is really between two characters:
@@ -192,7 +193,35 @@ pub fn handle_completion_request_ex<'a>(
     // return all keys of the object as valid completion items:
     let mut completions = Vec::with_capacity(map.len());
     for key in map.keys() {
-        completions.push(CompletionItem { label: key.clone(), ..Default::default() });
+        let mut completion_text_edit = None;
+        let mut additional_text_edits = None;
+        if key.contains(' ') {
+            let mut original_pos_minus_1 = original_pos.clone();
+            if original_pos_minus_1.character != 0 {
+                original_pos_minus_1.character -= 1;
+            }
+            // let mut original_pos_plus_1 = original_pos.clone();
+            // original_pos_plus_1.character += 1;
+            // the insert range must be a prefix of the replace range, that is
+            // both must start at the same position, and the replace range may be longer than the insert range.
+            // also: it must be a single line, and must be on the same line from the original
+            // completion params
+            completion_text_edit = Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+                new_text: format!("['{}']", key),
+                insert: Range { start: original_pos, end: original_pos },
+                replace: Range { start: original_pos, end: original_pos },
+            }));
+            additional_text_edits = Some(vec![TextEdit {
+                range: Range { start: original_pos_minus_1, end: original_pos },
+                new_text: "".to_string(),
+            }]);
+        }
+        completions.push(CompletionItem {
+            label: key.clone(),
+            text_edit: completion_text_edit,
+            additional_text_edits,
+            ..Default::default()
+        });
     }
     Some(completions)
 }
@@ -365,5 +394,37 @@ resource some_template(other_resource)
         assert_eq!(res.len(), 2);
         assert_eq!(res.remove(0).label, "option1");
         assert_eq!(res.remove(0).label, "option2");
+    }
+
+    #[test]
+    fn json_path_completions_use_bracketed_syntax_if_theres_a_space() {
+        // $.other_resource. at column 36
+        let document = r#"resource some_template(a)
+   {"a": "b", "c": $.other_resource.}
+
+resource some_template(other_resource)
+  {"opti on1": null}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(1, 36);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $.other_resource.
+        // so it should recomment the keys within "other_resource"
+        // but since it has a space, it should recommend an insert with ['opti on1']
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 1);
+        let completion = res.remove(0);
+        assert_eq!(completion.label, "opti on1");
+        assert_eq!(completion.additional_text_edits.unwrap().len(), 1);
+        let text_edit = completion.text_edit.unwrap();
+        match text_edit {
+            CompletionTextEdit::InsertAndReplace(insert_replace_edit) => {
+                assert_eq!(insert_replace_edit.new_text, "['opti on1']");
+            }
+            CompletionTextEdit::Edit(_) => panic!("it should be a insert and replace")
+        }
     }
 }
