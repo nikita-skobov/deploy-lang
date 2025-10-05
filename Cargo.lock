@@ -98,9 +98,11 @@ dependencies = [
 name = "cli_engine"
 version = "0.1.0"
 dependencies = [
+ "assert_matches",
  "dcl_language",
  "hex",
  "hmac-sha256",
+ "json_with_positions",
  "serde",
  "serde_json",
  "tokio",
