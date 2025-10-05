@@ -157,13 +157,15 @@ pub struct TrWithTemplate {
 /// updated (the resource has a prior entry in state and the resource either has a json path [which means
 /// we dont know yet if it has changed or not] or the resource's input has changed from its prior state entry)
 /// or deleted (any state entries that remain that dont have a corresponding resource in the dcl file. these are resources
-/// that were previously created and now must be deleted)
+/// that were previously created and now must be deleted).
+/// after calling this function, the state's resources will only contain no-op resources whose input has not changed
 pub fn get_transitionable_resources(
     state: &mut StateFile,
     dcl: &mut DclFile,
 ) -> Vec<TransitionableResource> {
     // first collect the known resources that are to be created or updated:
     let mut out = Vec::with_capacity(state.resources.len());
+    let mut done_resources = HashMap::new();
     for resource in dcl.resources.drain(..) {
         match state.resources.remove(&resource.resource_name) {
             Some(state_entry) => {
@@ -171,9 +173,12 @@ pub fn get_transitionable_resources(
                 // from the transitionable resources:
                 if resource_input_has_been_changed(&resource, &state_entry) {
                     out.push(TransitionableResource::Update { state_entry, current_entry: resource });
+                } else {
+                    // otherwise its input has not changed, dont add it to the
+                    // list of transitionable resources. instead, treat it as
+                    // done so other resources can read its output
+                    done_resources.insert(state_entry.resource_name.clone(), state_entry);
                 }
-                // otherwise its input has not changed, dont add it to the
-                // list of transitionable resources
             }
             None => {
                 // this resource is to be created since there's no corresponding state entry
@@ -186,6 +191,9 @@ pub fn get_transitionable_resources(
     for (_, state_entry) in state.resources.drain() {
         out.push(TransitionableResource::Delete { state_entry })
     }
+    // afterwards, put back all of the resources that had no-op updates into the state
+    // such that other resources can look up their outputs:
+    state.resources = done_resources;
     out
 }
 
@@ -270,6 +278,7 @@ mod test {
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Create { .. });
+        assert_eq!(state.resources.len(), 0);
     }
 
     #[test]
@@ -288,6 +297,7 @@ mod test {
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Delete { .. });
+        assert_eq!(state.resources.len(), 0);
     }
 
     #[test]
@@ -312,6 +322,7 @@ mod test {
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Update { .. });
+        assert_eq!(state.resources.len(), 0);
     }
 
     #[test]
@@ -338,6 +349,7 @@ mod test {
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Update { .. });
+        assert_eq!(state.resources.len(), 0);
     }
 
     #[test]
@@ -361,6 +373,13 @@ mod test {
         // therefore it should not be transitionable
         let transitionable = get_transitionable_resources(&mut state, &mut dcl);
         assert_eq!(transitionable.len(), 0);
+        // it should be in the state still because its treated as "already done"
+        assert_matches!(state.resources.get("a"), Some(r) => {
+            assert_eq!(r.resource_name, "a");
+            assert_eq!(r.template_name, "t");
+            assert_eq!(r.last_input, serde_json::json!({"a":{"v1":"v1","v2":"v2"}}));
+        });
+        assert_eq!(state.resources.len(), 1);
     }
 
     #[test]
