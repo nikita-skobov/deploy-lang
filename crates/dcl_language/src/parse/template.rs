@@ -4,7 +4,7 @@ use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
 
 pub const SECTION_TYPE: &str = "template";
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct TemplateSection {
     /// a unique identifier for this template
     pub template_name: StringAtLine,
@@ -22,14 +22,14 @@ pub struct TemplateSection {
     create_was_set: bool,
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct Transition {
     pub before_directives: Vec<Directive>,
     pub after_directives: Vec<Directive>,
     pub cli_commands: Vec<CliCommand>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CliCommand {
     /// name of the command to be ran
     pub command: StringAtLine,
@@ -42,7 +42,7 @@ pub struct CliCommand {
 /// a cli command can have a list of arg transforms
 /// these are processed in order, and manipulate an arg map prior to
 /// passing the transformed args to the actual command
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ArgTransform {
     /// represented in .dcl file by "... $.query"
     /// this transform takes the provided json path query
@@ -64,7 +64,7 @@ pub enum ArgTransform {
     Add(StringAtLine, jsonpath_rust::parser::model::JpQuery),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Directive {
 
 }
