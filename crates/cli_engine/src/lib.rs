@@ -53,7 +53,7 @@ pub fn load_state(dcl: &DclFile) -> Result<StateFile, SpannedDiagnostic> {
 }
 
 /// represents a resource that has successfully been created/updated in a state file
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 pub struct ResourceInState {
     /// name of the resource. unique across all resources
     pub resource_name: String,
@@ -68,6 +68,10 @@ pub struct ResourceInState {
     pub last_input: serde_json::Value,
     /// the entire output of this resource after it was done being processed by its template.
     pub output: serde_json::Value,
+    /// all of the other resources that this resource depended on at the time it was last deployed.
+    /// in other words: this is a list of all of the unique resource names that this resource had in its
+    /// input as json paths the last time it was deployed
+    pub depends_on: Vec<String>
 }
 
 #[derive(Debug)]
@@ -276,7 +280,7 @@ mod test {
             resource_name: "a".to_string(),
             template_name: "t".to_string(),
             last_input: serde_json::json!({"a": "a"}),
-            output: serde_json::Value::Null,
+            ..Default::default()
         });
         // no current entry for resource 'a', but state does have a prior entry for resource 'a'
         // so it should be deleted
@@ -301,7 +305,7 @@ mod test {
             resource_name: "a".to_string(),
             template_name: "t".to_string(),
             last_input: serde_json::json!({"a": "a"}),
-            output: serde_json::Value::Null,
+            ..Default::default()
         });
         // a has a prior state, but its input has since changed. it should be updateable
         let mut transitionable = get_transitionable_resources(&mut state, &mut dcl);
@@ -325,7 +329,7 @@ mod test {
             resource_name: "a".to_string(),
             template_name: "t".to_string(),
             last_input: serde_json::json!({"a": "a"}),
-            output: serde_json::Value::Null,
+            ..Default::default()
         });
         // a has a prior state, but its current input is dynamic (has a json path)
         // so it should be considered updateable until its current input can be resolved
@@ -351,7 +355,7 @@ mod test {
             resource_name: "a".to_string(),
             template_name: "t".to_string(),
             last_input: serde_json::json!({"a": {"v1": "v1", "v2": "v2" }}),
-            output: serde_json::Value::Null,
+            ..Default::default()
         });
         // a has a prior state, but its last input is the same as its current input
         // therefore it should not be transitionable
@@ -390,14 +394,13 @@ mod test {
             resource_name: "b".to_string(),
             template_name: "t".to_string(),
             last_input: serde_json::json!({"b": {"v1": "v1", "v2": "v2" }}),
-            output: serde_json::Value::Null,
+            ..Default::default()
         });
         // resource to be deleted because it has no current entry:
         state.resources.insert("c".to_string(), ResourceInState {
             resource_name: "c".to_string(),
             template_name: "t".to_string(),
-            last_input: serde_json::json!({}),
-            output: serde_json::Value::Null,
+            ..Default::default()
         });
         let transitionable = get_transitionable_resources(&mut state, &mut dcl);
         let matched = match_resources_with_template(transitionable, &dcl).expect("should not error");
@@ -446,8 +449,7 @@ mod test {
         let r = ResourceInState {
             resource_name: "a".to_string(),
             template_name: "t".to_string(),
-            last_input: serde_json::json!({}),
-            output: serde_json::json!({}),
+            ..Default::default()
         };
         // template 't' does not exist. matching to a template should fail:
         let transitionable = vec![TransitionableResource::Delete { state_entry: r }];
@@ -456,3 +458,15 @@ mod test {
         assert!(err.contains("your options, in order from most recommended to least recommended"));
     }
 }
+
+
+/*
+
+
+delete cases:
+1. you delete a resource that does not depend on anything, nor anything depends on it. can be handled easily
+2. you delete a resource that depends on another resource 'X'. X still exists. your resource can be deleted easily.
+3. you delete a resource that depends on another resource 'X'. X is to be deleted in this update. must delete your resource first, before deleting X.
+
+
+*/
