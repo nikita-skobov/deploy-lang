@@ -26,6 +26,15 @@ impl Value {
     pub fn to_serde_json_value(self) -> serde_json::Value {
         convert_to_serde_value_recursively(self)
     }
+    /// converts a value to a serde json value only if self has no JsonPaths.
+    /// otherwise returns None
+    pub fn to_serde_json_value_pure(&self) -> Option<serde_json::Value> {
+        let converted = convert_to_serde_value_recursively(self.clone());
+        if has_a_path_query_key(&converted) {
+            return None
+        }
+        Some(converted)
+    }
 }
 
 impl<I: ValueIndexable> Index<I> for Value {
@@ -69,6 +78,29 @@ impl ValueIndexable for &str {
                 val.get(*self)
             }
             _ => None,
+        }
+    }
+}
+
+pub fn has_a_path_query_key(json_obj: &serde_json::Value) -> bool {
+    match json_obj {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(_) => false,
+        serde_json::Value::Number(_) => false,
+        serde_json::Value::String(_) => false,
+        serde_json::Value::Array(values) => {
+            values.iter().any(|x| has_a_path_query_key(x))
+        }
+        serde_json::Value::Object(map) => {
+            for (key, val) in map.iter() {
+                if key == PATH_QUERY_KEY {
+                    return true;
+                }
+                if has_a_path_query_key(val) {
+                    return true;
+                }
+            }
+            false
         }
     }
 }
