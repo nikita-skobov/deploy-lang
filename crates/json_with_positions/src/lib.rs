@@ -26,6 +26,12 @@ impl Value {
     pub fn to_serde_json_value(self) -> serde_json::Value {
         convert_to_serde_value_recursively(self)
     }
+    pub fn to_serde_json_value_with_replace_func(
+        &self,
+        replacement_func: &mut impl FnMut(&str) -> Result<serde_json::Value, String>
+    ) -> Result<serde_json::Value, String> {
+        convert_to_serde_value_recursively_with_replacement_func(self, replacement_func)
+    }
     /// converts a value to a serde json value only if self has no JsonPaths.
     /// otherwise returns None
     pub fn to_serde_json_value_pure(&self) -> Option<serde_json::Value> {
@@ -160,6 +166,45 @@ pub fn convert_to_serde_value_recursively(dynamic_json_val: Value) -> serde_json
             let mut out = serde_json::Map::new();
             out.insert(PATH_QUERY_KEY.to_string(), serde_json::Value::String(val.s));
             serde_json::Value::Object(out)
+        }
+    }
+}
+
+/// converts a value into a serde json value recursively, converting any
+/// json path by calling the replacement function with the json path as a string.
+/// returns an error if the replacement function errors
+pub fn convert_to_serde_value_recursively_with_replacement_func(
+    dynamic_json_val: &Value,
+    replacement_func: &mut impl FnMut(&str) -> Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    match dynamic_json_val {
+        Value::Null { .. } => Ok(serde_json::Value::Null),
+        Value::Bool { val, .. } => Ok(serde_json::Value::Bool(*val)),
+        Value::Number { val, .. } => {
+            let num = match val {
+                Number::Float(f) => serde_json::Number::from_f64(*f),
+                Number::Int(i) => serde_json::Number::from_i128(*i as _),
+            }.unwrap_or(serde_json::Number::from(0));
+            Ok(serde_json::Value::Number(num))
+        },
+        Value::String { val, .. } => Ok(serde_json::Value::String(val.s.clone())),
+        Value::Array { val, .. } => {
+            let mut out = Vec::with_capacity(val.len());
+            for val in val {
+                out.push(convert_to_serde_value_recursively_with_replacement_func(val, replacement_func)?);
+            }
+            Ok(serde_json::Value::Array(out))
+        }
+        Value::Object { val, .. } => {
+            let mut out = serde_json::Map::with_capacity(val.len());
+            for (key, val) in val {
+                out.insert(key.s.clone(), convert_to_serde_value_recursively_with_replacement_func(val, replacement_func)?);
+            }
+            Ok(serde_json::Value::Object(out))
+        }
+        Value::JsonPath { val, .. } => {
+            let replaced_val = replacement_func(&val.s)?;
+            Ok(replaced_val)
         }
     }
 }
