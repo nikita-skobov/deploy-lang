@@ -788,6 +788,28 @@ mod test {
     }
 
     #[test]
+    fn transient_deps_checks_for_self_dep_err() {
+        let a = create_tr!("a"; r#"{"1": $.a}"#);
+        let trs = [a];
+        let current = &trs[0];
+        // A depends on A which should be an error
+        let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
+        assert_eq!(err, "resource 'a' cannot depend on itself");
+    }
+
+    #[test]
+    fn transient_deps_checks_for_self_dep_err_deep() {
+        let a = create_tr!("a"; r#"{"1": $.b}"#);
+        let b = create_tr!("b"; r#"{"1": $.c}"#);
+        let c = create_tr!("c"; r#"{"1": $.c}"#);
+        let trs = [a, b, c];
+        let current = &trs[0];
+        // C depends on C which should be an error
+        let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
+        assert_eq!(err, "resource 'c' cannot depend on itself");
+    }
+
+    #[test]
     fn can_get_all_transient_deps_deep_circle() {
         let a = create_tr!("a"; r#"{"1": $.b}"#);
         let b = create_tr!("b"; r#"{"1": $.c}"#);
