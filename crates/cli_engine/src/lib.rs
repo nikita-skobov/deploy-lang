@@ -300,9 +300,61 @@ pub fn remove_bracketed_selector_quotes<const C: char>(s: &mut String) {
     }
 }
 
+pub fn get_all_transient_dependencies_map(trs: &[TrWithTemplate]) -> Result<HashMap<String, Vec<String>>, String> {
+    // first, collect a map of all immediate dependencies:
+    let mut immediate_dep_map = HashMap::with_capacity(trs.len());
+    for tr in trs {
+        let immediate_deps = get_immediate_dependencies(tr)?;
+        immediate_dep_map.insert(tr.tr.get_resource_name().to_string(), immediate_deps);
+    }
+    let mut transient_dep_map = HashMap::with_capacity(immediate_dep_map.len());
+    // next, for each Tr, get all of its transient dependencies by building a vec
+    // recursively by looking up its deps in the map
+    for (tr_name, immediate_deps) in immediate_dep_map.iter() {
+        let mut visited = Vec::with_capacity(immediate_deps.len() + 1);
+        let mut all_transient_deps = Vec::with_capacity(immediate_deps.len());
+        visited.push(tr_name);
+        collect_all_transient_deps(&tr_name, &mut visited, &mut all_transient_deps, &immediate_dep_map)?;
+        transient_dep_map.insert(tr_name.clone(), all_transient_deps);
+    }
+    Ok(transient_dep_map)
+}
+
+pub fn collect_all_transient_deps<'a>(
+    lookup: &str,
+    visited: &mut Vec<&'a String>,
+    collected: &mut Vec<String>,
+    immediate_dep_map: &'a HashMap<String, Vec<String>>
+) -> Result<(), String> {
+    let immediate_deps = immediate_dep_map.get(lookup).ok_or_else(|| {
+        format!("resource '{}' was not found in immediate dep map", lookup)
+    })?;
+    for dep in immediate_deps {
+        if dep == lookup {
+            return Err(format!("resource '{}' cannot depend on itself", lookup));
+        }
+        if let Some((i, dep_name)) = visited.iter().enumerate().find(|x| *x.1 == dep) {
+            if i == 0 {
+                // the first visited item must be the one that started the search
+                // if dep == the start of the search then there's a circular dependency
+                return Err(format!("circular dependency detected: resource '{}' depends transiently on '{}' which depends on '{}'", dep_name, lookup, dep));
+            }
+            // otherwise, it's simply a dependency that we've already visited. if we've already visited, then
+            // we must not recurse
+            continue;
+        }
+        collected.push(dep.clone());
+        visited.push(dep);
+        collect_all_transient_deps(dep, visited, collected, immediate_dep_map)?;
+    }
+    collected.sort();
+    collected.dedup();
+    Ok(())
+}
+
 pub fn get_all_transient_dependencies(current: &TrWithTemplate, trs: &[TrWithTemplate]) -> Result<Vec<String>, String> {
-    let immediate_deps = get_immediate_dependencies(current)?;
-    Ok(immediate_deps)
+    let mut map = get_all_transient_dependencies_map(trs)?;
+    map.remove(current.tr.get_resource_name()).ok_or_else(|| format!("resource '{}' not found in map of all resources", current.tr.get_resource_name()))
 }
 
 pub async fn perform_update(mut dcl: DclFile, mut state: StateFile) -> Result<StateFile, String> {
@@ -661,6 +713,95 @@ mod test {
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
         assert_eq!(deps[1], "resourceC");
+    }
+
+    macro_rules! create_tr {
+        ($name: literal; $input: literal) => {
+            TrWithTemplate {
+                tr: TransitionableResource::Create { current_entry: ResourceSection {
+                    resource_name: $name.to_string(),
+                    template_name: "t".to_string(),
+                    input: json_with_positions::parse_json_value($input).unwrap(),
+                } },
+                template: Default::default()
+            }
+        };
+    }
+
+    #[test]
+    fn all_transient_deps_works() {
+        let mut immediate_dep_map = HashMap::new();
+        immediate_dep_map.insert("A".to_string(), vec!["B".to_string(), "C".to_string()]);
+        immediate_dep_map.insert("B".to_string(), vec!["C".to_string()]);
+        immediate_dep_map.insert("C".to_string(), vec!["D".to_string()]);
+        immediate_dep_map.insert("D".to_string(), vec![]);
+        let a = "A".to_string();
+        let mut visited = vec![&a];
+        let mut collected = vec![];
+        collect_all_transient_deps("A", &mut visited, &mut collected, &immediate_dep_map).unwrap();
+        assert_eq!(collected, vec!["B", "C", "D"]);
+    }
+
+    #[test]
+    fn all_transient_can_detect_circular_dependency() {
+        let mut immediate_dep_map = HashMap::new();
+        immediate_dep_map.insert("A".to_string(), vec!["B".to_string(), "C".to_string()]);
+        immediate_dep_map.insert("B".to_string(), vec!["C".to_string()]);
+        immediate_dep_map.insert("C".to_string(), vec!["A".to_string()]);
+        let a = "A".to_string();
+        let mut visited = vec![&a];
+        let mut collected = vec![];
+        let err = collect_all_transient_deps("A", &mut visited, &mut collected, &immediate_dep_map).expect_err("it should error");
+        assert_eq!(err, "circular dependency detected: resource 'A' depends transiently on 'C' which depends on 'A'");
+    }
+
+    #[test]
+    fn can_get_all_transient_deps_duplicate_ok() {
+        let a = create_tr!("a"; r#"{"1": $.b, "2": $.c}"#);
+        let b = create_tr!("b"; r#"{"1": $.c}"#);
+        let c = create_tr!("c"; r#"{}"#);
+        let trs = [a, b, c];
+        let current = &trs[0];
+        // A depends on B and C
+        // B depends on C
+        // C depends on nothing.
+        // this should be valid, and all transient deps of A should be B and C
+        let mut deps = get_all_transient_dependencies(current, &trs).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps, ["b", "c"]);
+    }
+
+    #[test]
+    fn can_get_all_transient_deps_simple_ok() {
+        let a = create_tr!("a"; r#"{"1": $.b}"#);
+        let b = create_tr!("b"; r#"{"1": $.c}"#);
+        let c = create_tr!("c"; r#"{}"#);
+        let trs = [a, b, c];
+        let current = &trs[0];
+        // A depends on B
+        // B depends on C
+        // C depends on nothing.
+        // this should be valid, and all transient deps of A should be B and C
+        let mut deps = get_all_transient_dependencies(current, &trs).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps, ["b", "c"]);
+    }
+
+    #[test]
+    fn can_get_all_transient_deps_deep_circle() {
+        let a = create_tr!("a"; r#"{"1": $.b}"#);
+        let b = create_tr!("b"; r#"{"1": $.c}"#);
+        let c = create_tr!("c"; r#"{"1": $.d}"#);
+        let d = create_tr!("d"; r#"{"1": $.a}"#);
+        let trs = [a, b, c, d];
+        let current = &trs[0];
+        // A depends on B
+        // B depends on C
+        // C depends on D
+        // D depends on A
+        // this should be invalid because A transiently depends on D which depends on A.
+        let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
+        assert!(err.starts_with("circular dependency detected"));
     }
 }
 
