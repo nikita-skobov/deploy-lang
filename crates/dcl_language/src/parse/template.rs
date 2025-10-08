@@ -29,7 +29,7 @@ pub struct Transition {
     pub cli_commands: Vec<CliCommand>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct CliCommand {
     /// name of the command to be ran
     pub command: StringAtLine,

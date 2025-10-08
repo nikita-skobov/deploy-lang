@@ -4,7 +4,9 @@ use dcl_language::{parse::{resource::ResourceSection, template::TemplateSection,
 use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::State, Query}};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Default)]
+pub mod run_template;
+
+#[derive(Serialize, Deserialize, Default, Debug)]
 pub struct StateFile {
     /// reserved root field for later metadata, currently unused and values will show up as null
     #[serde(default)]
@@ -412,7 +414,11 @@ pub async fn perform_update_batch(
     while let Some(next) = task_set.join_next().await {
         let res = next.map_err(|e| format!("deployment task panicked: {:?}", e))?;
         // TODO: should 1 resource failure stop all other resources? for now it will...
-        let res = res?;
+        let res = res.map_err(|(resource_name, e)| {
+            log::error!(logger: logger, "resource '{}' failed to transition. error: {}", resource_name, e);
+            e
+        })?;
+        log::info!(logger: logger, "resource '{}' OK", res.resource_name);
         // add this to the state, then look up all the resources that depend on this resource and try to
         // spawn tasks for any other resource that can be transitioned now
         let resource_name = res.resource_name.clone();
@@ -447,7 +453,7 @@ pub fn spawn_all_currently_transitionable(
     state: &StateFile,
     list: &mut Vec<TrWithTemplate>,
     dep_map: &HashMap<String, Vec<String>>,
-    task_set: &mut tokio::task::JoinSet<Result<ResourceInState, String>>,
+    task_set: &mut tokio::task::JoinSet<Result<ResourceInState, (String, String)>>,
 ) -> Result<(), String> {
     retain_mut_err::<_, String>(list, |tr| {
         if can_tr_be_transitioned(tr, dep_map, &state) {
@@ -553,21 +559,42 @@ pub async fn transition_single(
     logger: &'static dyn log::Log,
     tr: TrWithTemplate,
     current_input: serde_json::Value,
-    dependencies: Vec<String>
-) -> Result<ResourceInState, String> {
-    // // first check if this is an update:
-    // if let TransitionableResource::Update { state_entry, .. } = &tr.tr {
-    //     // if the input is the same (now that it's been able to be resolved)
-    //     // we can exit early. we still want to return its state such that our caller
-    //     // adds it to the statefile and this can be considered done.
-    //     if state_entry.last_input == current_input {
-    //         let mut state_entry = state_entry.clone();
-    //         state_entry.depends_on = dependencies;
-    //         return Ok(state_entry)
-    //     }
-    // }
+    depends_on: Vec<String>
+) -> Result<ResourceInState, (String, String)> {
+    // first check if this is an update:
+    if let TransitionableResource::Update { state_entry, .. } = &tr.tr {
+        // if the input is the same (now that it's been able to be resolved)
+        // we can exit early. we still want to return its state such that our caller
+        // adds it to the statefile and this can be considered done.
+        if state_entry.last_input == current_input {
+            let mut state_entry = state_entry.clone();
+            state_entry.depends_on = depends_on;
+            log::trace!(logger: logger, "resource '{}' input has not changed since last transition. returning noop", tr.tr.get_resource_name());
+            return Ok(state_entry)
+        }
+    }
 
-    todo!()
+    let TrWithTemplate { tr, template } = tr;
+    match tr {
+        TransitionableResource::Create { current_entry } => {
+            let output = run_template::create(
+                logger,
+                &current_entry.resource_name,
+                &template.template_name.s,
+                template.create,
+                current_input.clone(),
+            ).await.map_err(|e| (current_entry.resource_name.clone(), e))?;
+            Ok(ResourceInState {
+                resource_name: current_entry.resource_name,
+                template_name: template.template_name.s,
+                last_input: current_input,
+                output,
+                depends_on,
+            })
+        }
+        TransitionableResource::Update { state_entry, current_entry } => todo!(),
+        TransitionableResource::Delete { state_entry } => todo!(),
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +603,7 @@ mod test {
 
     use super::*;
     use assert_matches::assert_matches;
+    use dcl_language::parse::template::{ArgTransform, CliCommand};
 
     #[test]
     fn can_determine_createable_resources() {
@@ -1249,6 +1277,43 @@ mod test {
         spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set).expect("it should not error");
         assert_eq!(task_set.len(), 1);
         assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn perform_update_empty_ok() {
+        let logger = VecLogger::leaked();
+        let dcl = DclFile::default();
+        let state = StateFile::default();
+        perform_update(logger, dcl, state).await.expect("it should not error");
+    }
+
+    #[tokio::test]
+    async fn perform_update_hello_world() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "A".to_string(),
+            template_name: "template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+        });
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        let mut cli_cmd = CliCommand::default();
+        cli_cmd.command.s = "echo".to_string();
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        template.create.cli_commands.push(cli_cmd);
+        dcl.templates.push(template);
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        assert_eq!(a_resource.last_input, serde_json::json!({"this": "will be echoed"}));
+        assert_eq!(a_resource.template_name, "template");
+        assert_eq!(a_resource.output.as_str().unwrap(), "--this will be echoed\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK"]);
     }
 }
 

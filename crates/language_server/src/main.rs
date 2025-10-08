@@ -392,6 +392,7 @@ resource some_template(other_resource)
         let params = completion_params_with_position(completion_request_line, other_completion_column);
         let mut res = handle_completion_request_ex(params, &parsed).unwrap();
         assert_eq!(res.len(), 2);
+        res.sort_by(|a, b| a.label.cmp(&b.label));
         assert_eq!(res.remove(0).label, "option1");
         assert_eq!(res.remove(0).label, "option2");
     }
