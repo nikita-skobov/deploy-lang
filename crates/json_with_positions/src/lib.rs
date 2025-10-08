@@ -35,6 +35,29 @@ impl Value {
         }
         Some(converted)
     }
+    pub fn get_all_json_paths(&self) -> Vec<StringAtLine> {
+        match self {
+            Value::Null { .. } => vec![],
+            Value::Bool { .. } => vec![],
+            Value::Number { .. } => vec![],
+            Value::String { .. } => vec![],
+            Value::Array { val, .. } => {
+                let mut out = vec![];
+                for v in val {
+                    out.extend(v.get_all_json_paths());
+                }
+                out
+            }
+            Value::Object { val, .. } => {
+                let mut out = vec![];
+                for (_k, v) in val {
+                    out.extend(v.get_all_json_paths());
+                }
+                out
+            }
+            Value::JsonPath { val, .. } => vec![val.clone()],
+        }
+    }
 }
 
 impl<I: ValueIndexable> Index<I> for Value {

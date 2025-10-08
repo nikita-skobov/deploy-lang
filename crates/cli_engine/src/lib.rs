@@ -248,12 +248,73 @@ the following are your options, in order from most recommended to least recommen
     Ok(out)
 }
 
+/// returns a list of dependencies that are immediate: this current resource depends on resource A, B, C, ...
+/// dependencies are other resource names from json paths that are referenced by this current resource in its input json
+pub fn get_immediate_dependencies(current: &TrWithTemplate) -> Result<Vec<String>, String> {
+    let mut immediate_deps = match &current.tr {
+        TransitionableResource::Create { current_entry } |
+        TransitionableResource::Update { current_entry, .. } => {
+            // TODO: parse and extract just the first segment
+            let all_json_paths = current_entry.input.get_all_json_paths();
+            let num_json_paths = all_json_paths.len();
+            let json_paths = all_json_paths
+                .iter()
+                // we ignore errors here, only returning the successfully parsed json paths
+                // because that validation should have happened already by the dcl_language crate
+                .filter_map(|x| jsonpath_rust::parser::parse_json_path(&x.s).ok());
+            let mut out = Vec::with_capacity(num_json_paths);
+            for jpq in json_paths {
+                let resource_name = jpq.segments.first().ok_or_else(|| {
+                    format!("json path for resource '{}' does not reference any resource", current_entry.resource_name)
+                })?;
+                let resource_name = match resource_name {
+                    jsonpath_rust::parser::model::Segment::Selector(selector) => match selector {
+                        jsonpath_rust::parser::model::Selector::Name(s) => s,
+                        x => return Err(format!("json path for resource '{}' must start with a segment selector that references another resource. instead found '{}'", current_entry.resource_name, x)),
+                    },
+                    x => return Err(format!("json path for resource '{}' must start with a segment selector that references another resource. instead found '{}'", current_entry.resource_name, x)),
+                };
+                // json path parsing for some reason maintains the quotes in bracketed selectors.
+                // we wish to unquote:
+                let mut resource_name = resource_name.to_owned();
+                unquote_bracketed_selector(&mut resource_name);
+                out.push(resource_name);
+            }
+            out
+        }
+        TransitionableResource::Delete { state_entry } => state_entry.depends_on.clone(),
+    };
+    immediate_deps.dedup();
+    Ok(immediate_deps)
+}
+
+pub fn unquote_bracketed_selector(s: &mut String) {
+    remove_bracketed_selector_quotes::<'"'>(s);
+    remove_bracketed_selector_quotes::<'\''>(s);
+}
+
+pub fn remove_bracketed_selector_quotes<const C: char>(s: &mut String) {
+    while s.starts_with(C) && s.ends_with(C) && s.len() > 1 {
+        s.remove(0);
+        s.pop();
+    }
+}
+
+pub fn get_all_transient_dependencies(current: &TrWithTemplate, trs: &[TrWithTemplate]) -> Result<Vec<String>, String> {
+    let immediate_deps = get_immediate_dependencies(current)?;
+    Ok(immediate_deps)
+}
+
 pub async fn perform_update(mut dcl: DclFile, mut state: StateFile) -> Result<StateFile, String> {
     // first, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
     let transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
     // next, ensure every resource can be matched with a template. error otherwise:
-    let _transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
+    let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
+    // split out deletes
+    let deletes: Vec<TrWithTemplate> = transitionable_resources.extract_if(.., |tr| tr.tr.is_delete()).collect();
+    let create_or_updates = transitionable_resources;
+
     todo!()
 }
 
@@ -475,6 +536,131 @@ mod test {
         let err = match_resources_with_template(transitionable, &dcl).expect_err("it should error");
         assert!(err.starts_with("\nresource 'a' is to be deleted, but its template 't' does not exist"));
         assert!(err.contains("your options, in order from most recommended to least recommended"));
+    }
+
+    #[test]
+    fn can_get_immediate_dependencies_for_create() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".to_string(),
+                    template_name: "template".to_string(),
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $.resourceB.output.name,
+                        "thing2": $.resourceC.input.something
+                    }"#).unwrap(),
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0], "resourceB");
+        assert_eq!(deps[1], "resourceC");
+    }
+
+    #[test]
+    fn can_get_immediate_dependencies_bracketed() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".to_string(),
+                    template_name: "template".to_string(),
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $['resourceB'].output.name,
+                        "thing2": $["resourceC"].input.something
+                    }"#).unwrap(),
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0], "resourceB");
+        assert_eq!(deps[1], "resourceC");
+    }
+
+    #[test]
+    fn get_immediate_dependencies_should_err_for_non_segment_selectors() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".to_string(),
+                    template_name: "template".to_string(),
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $[0].output.name
+                    }"#).unwrap(),
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let err = get_immediate_dependencies(&current).expect_err("it should error");
+        assert_eq!(err, "json path for resource 'a' must start with a segment selector that references another resource. instead found '0'");
+        
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".to_string(),
+                    template_name: "template".to_string(),
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $..output.name
+                    }"#).unwrap(),
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let err = get_immediate_dependencies(&current).expect_err("it should error");
+        assert_eq!(err, "json path for resource 'a' must start with a segment selector that references another resource. instead found '..output'");
+    }
+
+    #[test]
+    fn can_get_immediate_dependencies_for_update() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Update {
+                current_entry: ResourceSection {
+                    resource_name: "a".to_string(),
+                    template_name: "template".to_string(),
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $.resourceB.output.name,
+                        "thing2": $.resourceC.input.something
+                    }"#).unwrap(),
+                },
+                state_entry: ResourceInState {
+                    // these are deps from the last time this resource was ran
+                    // these shouldnt be returned.. get_immediate_dependencies should
+                    // return the deps from the current entry
+                    depends_on: vec!["a".to_string(), "b".to_string()],
+                    ..Default::default()
+                }
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0], "resourceB");
+        assert_eq!(deps[1], "resourceC");
+    }
+
+    #[test]
+    fn can_get_immediate_dependencies_for_delete() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Delete {
+                state_entry: ResourceInState {
+                    // a deleteable resource's immediate deps are from state as-is:
+                    depends_on: vec!["resourceB".to_string(), "resourceC".to_string()],
+                    ..Default::default()
+                }
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0], "resourceB");
+        assert_eq!(deps[1], "resourceC");
     }
 }
 

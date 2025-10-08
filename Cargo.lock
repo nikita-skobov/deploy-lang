@@ -103,6 +103,7 @@ dependencies = [
  "hex",
  "hmac-sha256",
  "json_with_positions",
+ "jsonpath-rust",
  "serde",
  "serde_json",
  "tokio",
