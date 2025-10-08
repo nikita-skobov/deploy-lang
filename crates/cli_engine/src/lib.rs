@@ -54,7 +54,7 @@ pub fn load_state(dcl: &DclFile) -> Result<StateFile, SpannedDiagnostic> {
 }
 
 /// represents a resource that has successfully been created/updated in a state file
-#[derive(Deserialize, Serialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
 pub struct ResourceInState {
     /// name of the resource. unique across all resources
     pub resource_name: String,
@@ -75,7 +75,7 @@ pub struct ResourceInState {
     pub depends_on: Vec<String>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TransitionableResource {
     /// a resource is Createable if it exists in the current .dcl file
     /// but has no prior state entry
@@ -383,22 +383,83 @@ pub async fn perform_update(mut dcl: DclFile, mut state: StateFile) -> Result<St
     let dependency_map = get_all_transient_dependencies_map(&transitionable_resources)?;
     // split out deletes
     let deletes: Vec<TrWithTemplate> = transitionable_resources.extract_if(.., |tr| tr.tr.is_delete()).collect();
-    let mut create_or_updates = transitionable_resources;
-    // process creates/updates first
-    // let mut task_set = tokio::task::JoinSet::new();
+    let create_or_updates = transitionable_resources;
+    // process creates/updates first then deletes
+    perform_update_batch(&mut state, create_or_updates, &dependency_map).await?;
+    perform_update_batch(&mut state, deletes, &dependency_map).await?;
+    Ok(state)
+}
+
+pub async fn perform_update_batch(
+    state: &mut StateFile,
+    mut batch: Vec<TrWithTemplate>,
+    dep_map: &HashMap<String, Vec<String>>,
+) -> Result<(), String> {
+    if batch.is_empty() { return Ok(()) }
+
+    let mut task_set = tokio::task::JoinSet::new();
     // fire off async tasks for all trs that can be updated now, remove them from the list
     // so that they aren't processed multiple times
-    create_or_updates.retain_mut(|tr| {
-        if can_tr_be_transitioned(tr, &dependency_map, &state) {
-            let tr = std::mem::take(tr);
-            // now that we know all of its dependencies are done
-            // turn its input into a serde_json::Value
-            
-            return false
+    spawn_all_currently_transitionable(&state, &mut batch, dep_map, &mut task_set)?;
+    if task_set.is_empty() {
+        return Err(format!("error: unable to spawn any transitionable resource jobs"))
+    }
+    while let Some(next) = task_set.join_next().await {
+        let res = next.map_err(|e| format!("deployment task panicked: {:?}", e))?;
+        // TODO: should 1 resource failure stop all other resources? for now it will...
+        let res = res?;
+        // add this to the state, then look up all the resources that depend on this resource and try to
+        // spawn tasks for any other resource that can be transitioned now
+        let resource_name = res.resource_name.clone();
+        state.resources.insert(resource_name.clone(), res);
+        // spawn everything thats now transitionable: the resource that just finished may have made it possible to spawn more
+        spawn_all_currently_transitionable(&state, &mut batch, dep_map, &mut task_set)?;
+    }
+    // if theres any remaining TRs in the batch, error out as the transition cannot be counted a success:
+    if !batch.is_empty() {
+        return Err(format!("{} resources were not transitioned: {:?}", batch.len(), batch.iter().map(|x| x.tr.get_resource_name()).collect::<Vec<_>>()))
+    }
+    Ok(())
+}
+
+pub fn retain_mut_err<T, E>(v: &mut Vec<T>, mut f: impl FnMut(&mut T) -> Result<bool, E>) -> Result<(), E> {
+    let mut error: Option<E> = None;
+    v.retain_mut(|t| {
+        match f(t) {
+            Ok(b) => return b,
+            Err(e) => error = Some(e)
         }
         true
     });
-    todo!()
+    if let Some(e) = error {
+        return Err(e);
+    }
+    Ok(())
+}
+
+pub fn spawn_all_currently_transitionable(
+    state: &StateFile,
+    list: &mut Vec<TrWithTemplate>,
+    dep_map: &HashMap<String, Vec<String>>,
+    task_set: &mut tokio::task::JoinSet<Result<ResourceInState, String>>,
+) -> Result<(), String> {
+    retain_mut_err::<_, String>(list, |tr| {
+        if can_tr_be_transitioned(tr, dep_map, &state) {
+            let tr = std::mem::take(tr);
+            // now that we know all of its dependencies are done
+            // turn its input into a serde_json::Value
+            let input = prepare_tr_for_transition(&tr, &state)?;
+            let dependencies = dep_map.get(tr.tr.get_resource_name())
+                // shouldnt be possible here, but error to be safe
+                .ok_or("failed to lookup resource from dependency_map")?
+                .to_vec();
+            task_set.spawn(async move {
+                transition_single(tr, input, dependencies).await
+            });
+            return Ok(false)
+        }
+        Ok(true)
+    })
 }
 
 /// annoyingly will process json path query twice.
@@ -480,6 +541,22 @@ pub fn can_tr_be_transitioned(tr: &TrWithTemplate, dep_map: &HashMap<String, Vec
     let no_deps = vec![];
     let dep_list = dep_map.get(tr.tr.get_resource_name()).unwrap_or(&no_deps);
     dep_list.iter().all(|dep| state.resources.contains_key(dep))
+}
+
+pub async fn transition_single(tr: TrWithTemplate, current_input: serde_json::Value, dependencies: Vec<String>) -> Result<ResourceInState, String> {
+    // // first check if this is an update:
+    // if let TransitionableResource::Update { state_entry, .. } = &tr.tr {
+    //     // if the input is the same (now that it's been able to be resolved)
+    //     // we can exit early. we still want to return its state such that our caller
+    //     // adds it to the statefile and this can be considered done.
+    //     if state_entry.last_input == current_input {
+    //         let mut state_entry = state_entry.clone();
+    //         state_entry.depends_on = dependencies;
+    //         return Ok(state_entry)
+    //     }
+    // }
+
+    todo!()
 }
 
 #[cfg(test)]
@@ -1089,6 +1166,51 @@ mod test {
         let tr = create_tr!("a"; r#"{"a": $.b.output.hello}"#);
         let val = prepare_tr_for_transition(&tr, &state).expect("it should not error");
         assert_eq!(val, serde_json::json!({"a": []}));
+    }
+
+    #[test]
+    fn can_tr_be_transitioned_works() {
+        // it doesnt depend on anything
+        let tr = create_tr!("a"; r#"{}"#);
+        let mut state = StateFile::default();
+        let mut dep_map = HashMap::new();
+        dep_map.insert("a".to_string(), vec![]);
+        assert_eq!(can_tr_be_transitioned(&tr, &dep_map, &state), true);
+
+        // it depends on "b" which isnt done yet, so it should not be able to transition
+        let tr = create_tr!("a"; r#"{"b": $.b.output.something}"#);
+        dep_map.insert("a".to_string(), vec!["b".to_string()]);
+        assert_eq!(can_tr_be_transitioned(&tr, &dep_map, &state), false);
+
+        // now "b" is done in state, a should be able to transition now:
+        state.resources.insert("b".to_string(), Default::default());
+        assert_eq!(can_tr_be_transitioned(&tr, &dep_map, &state), true);
+    }
+
+    #[test]
+    fn spawn_all_currently_transitionable_is_noop_for_empty_list() {
+        let state = StateFile::default();
+        let mut list = vec![];
+        let dep_map = HashMap::new();
+        let mut task_set = tokio::task::JoinSet::new();
+        spawn_all_currently_transitionable(&state, &mut list, &dep_map, &mut task_set).expect("it should not error");
+        assert!(task_set.is_empty());
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_all_currently_transitionable_removed_from_list_if_it_can_be_transitioned() {
+        let mut state = StateFile::default();
+        let mut list = vec![
+            create_tr!("a"; r#"{"b": $.b.name}"#)
+        ];
+        let mut dep_map = HashMap::new();
+        dep_map.insert("a".to_string(), vec!["b".to_string()]);
+        state.resources.insert("b".to_string(), Default::default());
+        let mut task_set = tokio::task::JoinSet::new();
+        spawn_all_currently_transitionable(&state, &mut list, &dep_map, &mut task_set).expect("it should not error");
+        assert_eq!(task_set.len(), 1);
+        assert!(list.is_empty());
     }
 }
 

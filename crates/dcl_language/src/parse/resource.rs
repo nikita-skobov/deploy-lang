@@ -7,7 +7,7 @@ use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
 
 pub const SECTION_TYPE: &str = "resource";
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ResourceSection {
     /// name of the resource to be created/updated/deleted. must be unique
     /// across all resources
