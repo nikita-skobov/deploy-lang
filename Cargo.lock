@@ -104,6 +104,7 @@ dependencies = [
  "hmac-sha256",
  "json_with_positions",
  "jsonpath-rust",
+ "log",
  "serde",
  "serde_json",
  "tokio",

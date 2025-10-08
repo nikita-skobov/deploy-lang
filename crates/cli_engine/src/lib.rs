@@ -373,7 +373,11 @@ pub fn get_all_transient_dependencies(current: &TrWithTemplate, trs: &[TrWithTem
     map.remove(current.tr.get_resource_name()).ok_or_else(|| format!("resource '{}' not found in map of all resources", current.tr.get_resource_name()))
 }
 
-pub async fn perform_update(mut dcl: DclFile, mut state: StateFile) -> Result<StateFile, String> {
+pub async fn perform_update(
+    logger: &'static dyn log::Log,
+    mut dcl: DclFile,
+    mut state: StateFile,
+) -> Result<StateFile, String> {
     // first, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
     let transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
@@ -385,12 +389,13 @@ pub async fn perform_update(mut dcl: DclFile, mut state: StateFile) -> Result<St
     let deletes: Vec<TrWithTemplate> = transitionable_resources.extract_if(.., |tr| tr.tr.is_delete()).collect();
     let create_or_updates = transitionable_resources;
     // process creates/updates first then deletes
-    perform_update_batch(&mut state, create_or_updates, &dependency_map).await?;
-    perform_update_batch(&mut state, deletes, &dependency_map).await?;
+    perform_update_batch(logger, &mut state, create_or_updates, &dependency_map).await?;
+    perform_update_batch(logger, &mut state, deletes, &dependency_map).await?;
     Ok(state)
 }
 
 pub async fn perform_update_batch(
+    logger: &'static dyn log::Log,
     state: &mut StateFile,
     mut batch: Vec<TrWithTemplate>,
     dep_map: &HashMap<String, Vec<String>>,
@@ -400,7 +405,7 @@ pub async fn perform_update_batch(
     let mut task_set = tokio::task::JoinSet::new();
     // fire off async tasks for all trs that can be updated now, remove them from the list
     // so that they aren't processed multiple times
-    spawn_all_currently_transitionable(&state, &mut batch, dep_map, &mut task_set)?;
+    spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set)?;
     if task_set.is_empty() {
         return Err(format!("error: unable to spawn any transitionable resource jobs"))
     }
@@ -413,7 +418,7 @@ pub async fn perform_update_batch(
         let resource_name = res.resource_name.clone();
         state.resources.insert(resource_name.clone(), res);
         // spawn everything thats now transitionable: the resource that just finished may have made it possible to spawn more
-        spawn_all_currently_transitionable(&state, &mut batch, dep_map, &mut task_set)?;
+        spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set)?;
     }
     // if theres any remaining TRs in the batch, error out as the transition cannot be counted a success:
     if !batch.is_empty() {
@@ -438,6 +443,7 @@ pub fn retain_mut_err<T, E>(v: &mut Vec<T>, mut f: impl FnMut(&mut T) -> Result<
 }
 
 pub fn spawn_all_currently_transitionable(
+    logger: &'static dyn log::Log,
     state: &StateFile,
     list: &mut Vec<TrWithTemplate>,
     dep_map: &HashMap<String, Vec<String>>,
@@ -454,7 +460,7 @@ pub fn spawn_all_currently_transitionable(
                 .ok_or("failed to lookup resource from dependency_map")?
                 .to_vec();
             task_set.spawn(async move {
-                transition_single(tr, input, dependencies).await
+                transition_single(logger, tr, input, dependencies).await
             });
             return Ok(false)
         }
@@ -543,7 +549,12 @@ pub fn can_tr_be_transitioned(tr: &TrWithTemplate, dep_map: &HashMap<String, Vec
     dep_list.iter().all(|dep| state.resources.contains_key(dep))
 }
 
-pub async fn transition_single(tr: TrWithTemplate, current_input: serde_json::Value, dependencies: Vec<String>) -> Result<ResourceInState, String> {
+pub async fn transition_single(
+    logger: &'static dyn log::Log,
+    tr: TrWithTemplate,
+    current_input: serde_json::Value,
+    dependencies: Vec<String>
+) -> Result<ResourceInState, String> {
     // // first check if this is an update:
     // if let TransitionableResource::Update { state_entry, .. } = &tr.tr {
     //     // if the input is the same (now that it's been able to be resolved)
@@ -561,6 +572,8 @@ pub async fn transition_single(tr: TrWithTemplate, current_input: serde_json::Va
 
 #[cfg(test)]
 mod test {
+    use std::sync::Mutex;
+
     use super::*;
     use assert_matches::assert_matches;
 
@@ -1187,13 +1200,37 @@ mod test {
         assert_eq!(can_tr_be_transitioned(&tr, &dep_map, &state), true);
     }
 
+    #[derive(Default)]
+    pub struct VecLogger {
+        pub logs: Mutex<Vec<String>>,
+    }
+    impl VecLogger {
+        pub fn leaked() -> &'static VecLogger {
+            let boxed = Box::new(VecLogger::default());
+            Box::leak(boxed)
+        }
+        pub fn get_logs(&self) -> Vec<String> {
+            self.logs.lock().unwrap().clone()
+        }
+    }
+    impl log::Log for VecLogger {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            self.logs.lock().unwrap().push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+
     #[test]
     fn spawn_all_currently_transitionable_is_noop_for_empty_list() {
         let state = StateFile::default();
         let mut list = vec![];
         let dep_map = HashMap::new();
         let mut task_set = tokio::task::JoinSet::new();
-        spawn_all_currently_transitionable(&state, &mut list, &dep_map, &mut task_set).expect("it should not error");
+        let logger = VecLogger::leaked();
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set).expect("it should not error");
         assert!(task_set.is_empty());
         assert!(list.is_empty());
     }
@@ -1208,7 +1245,8 @@ mod test {
         dep_map.insert("a".to_string(), vec!["b".to_string()]);
         state.resources.insert("b".to_string(), Default::default());
         let mut task_set = tokio::task::JoinSet::new();
-        spawn_all_currently_transitionable(&state, &mut list, &dep_map, &mut task_set).expect("it should not error");
+        let logger = VecLogger::leaked();
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set).expect("it should not error");
         assert_eq!(task_set.len(), 1);
         assert!(list.is_empty());
     }
