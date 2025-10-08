@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use dcl_language::{parse::{resource::ResourceSection, template::TemplateSection, SpannedDiagnostic}, DclFile};
+use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::State, Query}};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Default)]
@@ -96,6 +97,12 @@ pub enum TransitionableResource {
     Delete { state_entry: ResourceInState },
 }
 
+impl Default for TransitionableResource {
+    fn default() -> Self {
+        Self::Delete { state_entry: Default::default() }
+    }
+}
+
 impl TransitionableResource {
     /// returns the template name of the resource to be transitioned.
     /// for update transitions will error if the state entry template name differs from the current entry template name
@@ -146,7 +153,7 @@ impl TransitionableResource {
 }
 
 /// transitionable resource with template
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TrWithTemplate {
     pub tr: TransitionableResource,
     pub template: TemplateSection,
@@ -267,17 +274,8 @@ pub fn get_immediate_dependencies(current: &TrWithTemplate) -> Result<Vec<String
                 let resource_name = jpq.segments.first().ok_or_else(|| {
                     format!("json path for resource '{}' does not reference any resource", current_entry.resource_name)
                 })?;
-                let resource_name = match resource_name {
-                    jsonpath_rust::parser::model::Segment::Selector(selector) => match selector {
-                        jsonpath_rust::parser::model::Selector::Name(s) => s,
-                        x => return Err(format!("json path for resource '{}' must start with a segment selector that references another resource. instead found '{}'", current_entry.resource_name, x)),
-                    },
-                    x => return Err(format!("json path for resource '{}' must start with a segment selector that references another resource. instead found '{}'", current_entry.resource_name, x)),
-                };
-                // json path parsing for some reason maintains the quotes in bracketed selectors.
-                // we wish to unquote:
-                let mut resource_name = resource_name.to_owned();
-                unquote_bracketed_selector(&mut resource_name);
+                let tr_name = current_entry.resource_name.as_str();
+                let resource_name = get_resource_name_from_segment(tr_name, resource_name)?;
                 out.push(resource_name);
             }
             out
@@ -286,6 +284,24 @@ pub fn get_immediate_dependencies(current: &TrWithTemplate) -> Result<Vec<String
     };
     immediate_deps.dedup();
     Ok(immediate_deps)
+}
+
+pub fn get_resource_name_from_segment(
+    current_name: &str,
+    segment: &jsonpath_rust::parser::model::Segment
+) -> Result<String, String> {
+    let resource_name = match segment {
+        jsonpath_rust::parser::model::Segment::Selector(selector) => match selector {
+            jsonpath_rust::parser::model::Selector::Name(s) => s,
+            x => return Err(format!("json path for resource '{}' must start with a segment selector that references another resource. instead found '{}'", current_name, x)),
+        },
+        x => return Err(format!("json path for resource '{}' must start with a segment selector that references another resource. instead found '{}'", current_name, x)),
+    };
+    // json path parsing for some reason maintains the quotes in bracketed selectors.
+    // we wish to unquote:
+    let mut resource_name = resource_name.to_owned();
+    unquote_bracketed_selector(&mut resource_name);
+    Ok(resource_name)
 }
 
 pub fn unquote_bracketed_selector(s: &mut String) {
@@ -363,11 +379,107 @@ pub async fn perform_update(mut dcl: DclFile, mut state: StateFile) -> Result<St
     let transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
     // next, ensure every resource can be matched with a template. error otherwise:
     let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
+    // get map of names of resources to a flat list of all transient dependencies of that resource
+    let dependency_map = get_all_transient_dependencies_map(&transitionable_resources)?;
     // split out deletes
     let deletes: Vec<TrWithTemplate> = transitionable_resources.extract_if(.., |tr| tr.tr.is_delete()).collect();
-    let create_or_updates = transitionable_resources;
-
+    let mut create_or_updates = transitionable_resources;
+    // process creates/updates first
+    // let mut task_set = tokio::task::JoinSet::new();
+    // fire off async tasks for all trs that can be updated now, remove them from the list
+    // so that they aren't processed multiple times
+    create_or_updates.retain_mut(|tr| {
+        if can_tr_be_transitioned(tr, &dependency_map, &state) {
+            let tr = std::mem::take(tr);
+            // now that we know all of its dependencies are done
+            // turn its input into a serde_json::Value
+            
+            return false
+        }
+        true
+    });
     todo!()
+}
+
+/// annoyingly will process json path query twice.
+/// we need to run it twice because jsonpath-rust doesnt expose a way to know if results
+/// are truly empty, or if the lookup returned an empty array.
+/// for that reason we run process first, check if it returned no results
+/// and if no results to error. otherwise to run again, and return
+pub fn process_json_path_query(jpq: &JpQuery, val: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    let processed_state = jpq.segments.process(State::root(val));
+    if processed_state.is_nothing() {
+        return Err(format!("json path query failed to lookup a value"));
+    }
+    let mut res = js_path_process(jpq, val)
+        .map_err(|e| format!("could not process json path query lookup: {:?}", e))?;
+    return Ok(res.drain(..).map(|x| x.val().clone()).collect())
+}
+
+/// process all of the json paths in this tr's current input
+/// and return a serde_json::Value representing its current input
+/// that will be passed to the deployment function.
+pub fn prepare_tr_for_transition(
+    tr: &TrWithTemplate,
+    state: &StateFile
+) -> Result<serde_json::Value, String> {
+    let current_json = match &tr.tr {
+        TransitionableResource::Create { current_entry } |
+        TransitionableResource::Update { current_entry, .. } => &current_entry.input,
+        TransitionableResource::Delete { state_entry } => return Ok(state_entry.last_input.clone())
+    };
+    let current_input = current_json.to_serde_json_value_with_replace_func(&mut |s| {
+        let mut jpq = jsonpath_rust::parser::parse_json_path(s)
+            .map_err(|e| format!(
+                "cannot create/update resource '{}'. invalid json path string '{}' error: {:?}",
+                tr.tr.get_resource_name(), s, e
+            ))?;
+        // the first segment in the query should correspond to an existing resource in the state file
+        let first_seg = if jpq.segments.len() == 0 {
+            return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference anything", tr.tr.get_resource_name(), s));
+        } else {
+            jpq.segments.remove(0)
+        };
+        let resource_name = get_resource_name_from_segment(tr.tr.get_resource_name(), &first_seg)?;
+        // look it up in state
+        let resource = state.resources.get(&resource_name).ok_or_else(|| format!("cannot create/update resource '{}'. json path references '{}' but this resource does not exist in state", tr.tr.get_resource_name(), resource_name))?;
+        let next_seg = if jpq.segments.len() == 0 {
+            return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference input or output of resource '{}'", tr.tr.get_resource_name(), s, resource_name))
+        } else {
+            jpq.segments.remove(0)
+        };
+        let input_or_output = get_resource_name_from_segment(tr.tr.get_resource_name(), &next_seg)?;
+        let value_to_lookup = match input_or_output.as_str() {
+            "input" => &resource.last_input,
+            "output" => &resource.output,
+            "name" => return Ok(serde_json::Value::String(resource_name)),
+            x => return Err(format!("cannot create/update resource '{}'. json path string '{}' after resource name '{}' must be 'input', 'output', or 'name'. instead found '{}'", tr.tr.get_resource_name(), s, resource_name, x))
+        };
+        // now that we have removed the first few segments of the json path, we can use jsonpath_rust to
+        // query the serde value:
+        let mut result_vals = process_json_path_query(&jpq, value_to_lookup).map_err(|e| {
+            format!("cannot create/update resource '{}'. json path string '{}' error: {}", tr.tr.get_resource_name(), s, e)
+        })?;
+        // if the value looked up was a single value, use it as a single value
+        let val = if result_vals.len() == 1 {
+            result_vals.pop().unwrap_or_default()
+        } else {
+            // otherwise user likely indeed wanted it to be an array:
+            let vals = result_vals;
+            serde_json::Value::Array(vals)
+        };
+
+        Ok(val)
+    })?;
+
+    Ok(current_input)
+}
+
+/// a TR can be transitioned iff all of its dependencies are done
+pub fn can_tr_be_transitioned(tr: &TrWithTemplate, dep_map: &HashMap<String, Vec<String>>, state: &StateFile) -> bool {
+    let no_deps = vec![];
+    let dep_list = dep_map.get(tr.tr.get_resource_name()).unwrap_or(&no_deps);
+    dep_list.iter().all(|dep| state.resources.contains_key(dep))
 }
 
 #[cfg(test)]
@@ -824,6 +936,159 @@ mod test {
         // this should be invalid because A transiently depends on D which depends on A.
         let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
         assert!(err.starts_with("circular dependency detected"));
+    }
+
+    #[test]
+    fn can_eval_json_paths_simple() {
+        let state = StateFile::default();
+        // nothing to process, it should just give a json object as its input
+        let tr = create_tr!("a"; r#"{"a":"b"}"#);
+        let input = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(input, serde_json::json!({"a":"b"}));
+    }
+
+    #[test]
+    fn can_eval_json_paths_lookup_name() {
+        let mut state = StateFile::default();
+        state.resources.insert("b".to_string(), Default::default());
+        // should simply resolve to the name of the resource "b"
+        let tr = create_tr!("a"; r#"{"a": $.b.name}"#);
+        let input = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(input, serde_json::json!({"a":"b"}));
+    }
+
+    #[test]
+    fn can_eval_json_paths_lookup_input() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            last_input: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to input value of the resource "b"
+        let tr = create_tr!("a"; r#"{"a": $.b.input}"#);
+        let input = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(input, serde_json::json!({"a":{"hello":"world"}}));
+    }
+
+    #[test]
+    fn can_eval_json_paths_lookup_input_deep() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            last_input: serde_json::json!({ "hello": { "something": ["", "", {"deep": "there"}, ""]} }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b"
+        let tr = create_tr!("a"; r#"{"a": $.b.input.hello.something[2].deep}"#);
+        let input = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(input, serde_json::json!({"a":"there"}));
+    }
+
+    #[test]
+    fn can_eval_json_paths_lookup_output() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to output value of the resource "b"
+        let tr = create_tr!("a"; r#"{"a": $.b.output}"#);
+        let input = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(input, serde_json::json!({"a":{"hello":"world"}}));
+    }
+
+    #[test]
+    fn can_eval_json_paths_lookup_output_deep() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": { "something": ["", "", {"deep": "there"}, ""]} }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b" output
+        let tr = create_tr!("a"; r#"{"a": $.b.output.hello.something[2].deep}"#);
+        let input = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(input, serde_json::json!({"a":"there"}));
+    }
+
+    #[test]
+    fn can_eval_json_paths_err_if_invalid_path() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b" output
+        let tr = create_tr!("a"; r#"{"a": $.b.blah.two}"#);
+        let err = prepare_tr_for_transition(&tr, &state).expect_err("it should error");
+        assert_eq!(err, "cannot create/update resource 'a'. json path string '$.b.blah.two' after resource name 'b' must be 'input', 'output', or 'name'. instead found 'blah'");
+    }
+
+    #[test]
+    fn can_eval_json_paths_err_if_resource_not_found() {
+        let state = StateFile::default();
+        let tr = create_tr!("a"; r#"{"a": $.b.blah.two}"#);
+        let err = prepare_tr_for_transition(&tr, &state).expect_err("it should error");
+        assert_eq!(err, "cannot create/update resource 'a'. json path references 'b' but this resource does not exist in state");
+    }
+
+    #[test]
+    fn can_eval_json_paths_err_if_invalid_path2() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b" output
+        let tr = create_tr!("a"; r#"{"a": $.b}"#);
+        let err = prepare_tr_for_transition(&tr, &state).expect_err("it should error");
+        assert_eq!(err, "cannot create/update resource 'a'. json path string '$.b' does not reference input or output of resource 'b'");
+    }
+
+    #[test]
+    fn can_eval_json_paths_err_if_invalid_path3() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b" output
+        let tr = create_tr!("a"; r#"{"a": $.b.output[1]}"#);
+        let err = prepare_tr_for_transition(&tr, &state).expect_err("it should error");
+        assert_eq!(err, "cannot create/update resource 'a'. json path string '$.b.output[1]' error: json path query failed to lookup a value");
+    }
+
+    #[test]
+    fn can_eval_json_paths_err_if_invalid_path4() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b" output
+        let tr = create_tr!("a"; r#"{"a": $.b.output.hello.non.existant.path}"#);
+        let err = prepare_tr_for_transition(&tr, &state).expect_err("it should error");
+        assert_eq!(err, "cannot create/update resource 'a'. json path string '$.b.output.hello.non.existant.path' error: json path query failed to lookup a value");
+    }
+
+    #[test]
+    fn can_eval_json_paths_to_empty_array() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            output: serde_json::json!({ "hello": [] }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to a nested value of the resource "b" output
+        let tr = create_tr!("a"; r#"{"a": $.b.output.hello}"#);
+        let val = prepare_tr_for_transition(&tr, &state).expect("it should not error");
+        assert_eq!(val, serde_json::json!({"a": []}));
     }
 }
 
