@@ -116,7 +116,7 @@ impl TransitionableResource {
                 let current_template_name = current_entry.template_name.as_str();
                 if state_template_name != current_template_name {
                     return Err(format!(
-                        "Resource '{}' currently references template '{}' but it was previously deployed with template '{}'",
+                        "resource '{}' currently references template '{}' but it was previously deployed with template '{}'",
                         current_entry.resource_name,
                         current_template_name,
                         state_template_name
@@ -1351,6 +1351,89 @@ mod test {
         assert_eq!(b_resource.output.as_str().unwrap(), "--resourceA --this will be echoed\n\n");
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK", "creating 'B'", "resource 'B' OK"]);
+    }
+
+    #[tokio::test]
+    async fn perform_update_resources_updates_can_become_noops() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "A".to_string(),
+            template_name: "template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+        });
+        // B has been deployed before, it should cause an update
+        // but B depends on A, and so we dont know if it should actually be updated or not:
+        // in this case, B should NOT be updated because its current input will be resolved
+        // (after A completes) to be the exact same as its last input
+        dcl.resources.push(ResourceSection {
+            resource_name: "B".to_string(),
+            template_name: "template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+        });
+        state.resources.insert("B".to_string(), ResourceInState {
+            template_name: "template".to_string(),
+            resource_name: "B".to_string(),
+            last_input: serde_json::json!({ "resourceA": "--this will be echoed\n" }),
+            ..Default::default()
+        });
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        let mut cli_cmd = CliCommand::default();
+        cli_cmd.command.s = "echo".to_string();
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        template.create.cli_commands.push(cli_cmd);
+        dcl.templates.push(template);
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 2);
+        let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        assert_eq!(a_resource.last_input, serde_json::json!({"this": "will be echoed"}));
+        assert_eq!(a_resource.template_name, "template");
+        assert_eq!(a_resource.output.as_str().unwrap(), "--this will be echoed\n");
+        let b_resource = out_state.resources.remove("B").expect("it should have an output resource 'B'");
+        assert_eq!(b_resource.depends_on, vec!["A"]);
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK", "resource 'B' input has not changed since last transition. returning noop", "resource 'B' OK"]);
+    }
+
+    #[tokio::test]
+    async fn perform_update_resources_update_requires_same_template_name() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "A".to_string(),
+            template_name: "template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+        });
+        // B has been deployed before, it should cause an update
+        // but B depends on A, and so we dont know if it should actually be updated or not:
+        // in this case, B should NOT be updated because its current input will be resolved
+        // (after A completes) to be the exact same as its last input
+        dcl.resources.push(ResourceSection {
+            resource_name: "B".to_string(),
+            template_name: "different template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+        });
+        state.resources.insert("B".to_string(), ResourceInState {
+            template_name: "template".to_string(),
+            resource_name: "B".to_string(),
+            last_input: serde_json::json!({ "resourceA": "--this will be echoed\n" }),
+            ..Default::default()
+        });
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        let mut cli_cmd = CliCommand::default();
+        cli_cmd.command.s = "echo".to_string();
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        template.create.cli_commands.push(cli_cmd);
+        dcl.templates.push(template);
+        let err = perform_update(logger, dcl, state).await.expect_err("it should error");
+        assert_eq!(err, "resource 'B' currently references template 'different template' but it was previously deployed with template 'template'");
     }
 }
 
