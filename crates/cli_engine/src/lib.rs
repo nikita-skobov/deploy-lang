@@ -1315,6 +1315,43 @@ mod test {
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK"]);
     }
+
+    #[tokio::test]
+    async fn perform_update_resources_dependencies_processed_in_order() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "A".to_string(),
+            template_name: "template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+        });
+        dcl.resources.push(ResourceSection {
+            resource_name: "B".to_string(),
+            template_name: "template".to_string(),
+            input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+        });
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        let mut cli_cmd = CliCommand::default();
+        cli_cmd.command.s = "echo".to_string();
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        template.create.cli_commands.push(cli_cmd);
+        dcl.templates.push(template);
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 2);
+        let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        assert_eq!(a_resource.last_input, serde_json::json!({"this": "will be echoed"}));
+        assert_eq!(a_resource.template_name, "template");
+        assert_eq!(a_resource.output.as_str().unwrap(), "--this will be echoed\n");
+        let b_resource = out_state.resources.remove("B").expect("it should have an output resource 'B'");
+        assert_eq!(b_resource.depends_on, vec!["A"]);
+        assert_eq!(b_resource.output.as_str().unwrap(), "--resourceA --this will be echoed\n\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK", "creating 'B'", "resource 'B' OK"]);
+    }
 }
 
 
