@@ -18,7 +18,7 @@ pub mod state;
 pub mod template;
 pub mod resource;
 
-use str_at_line::{LineCounterIterator, StrAtLine};
+use str_at_line::{LineCounterIterator, SpannedStr, StrAtLine};
 
 use crate::DclFile;
 
@@ -98,13 +98,13 @@ impl SpannedDiagnostic {
         out.span.end.column = end_column;
         out
     }
-    pub fn from_str_at_line<'a, S: AsRef<str>>(s: StrAtLine<'a>, message: S) -> Self {
+    pub fn from_str_at_line<L: SpannedStr, S: AsRef<str>>(s: L, message: S) -> Self {
         let mut out = Self::default();
         out.message = message.as_ref().to_string();
-        out.span.start.line = s.line;
-        out.span.end.line = s.line;
-        out.span.start.column = s.col;
-        out.span.end.column = s.col + s.s.chars().count();
+        out.span.start.line = s.get_line();
+        out.span.end.line = s.get_line();
+        out.span.start.column = s.get_col();
+        out.span.end.column = s.get_col() + s.get_str().chars().count();
         out
     }
 }

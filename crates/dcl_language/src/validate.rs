@@ -16,13 +16,13 @@ pub fn validate_resources(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic
 
 pub fn resource_has_corresponding_template(resource: &ResourceSection, dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
     if !dcl.templates.iter().any(|x| resource.template_name == x.template_name) {
-        diagnostics.push(SpannedDiagnostic::new(
+        diagnostics.push(SpannedDiagnostic::from_str_at_line(
+            &resource.template_name,
             format!(
                     "template '{}' not found (referenced by resource '{}')",
                     resource.template_name,
                     resource.resource_name
                 ),
-                resource.template_name.line, resource.template_name.col
             ));
     }
 }

@@ -1,5 +1,11 @@
 use std::{borrow::Borrow, fmt::Display, hash::Hash, str::CharIndices};
 
+pub trait SpannedStr {
+    fn get_str<'a>(&'a self) -> &'a str;
+    fn get_line(&self) -> usize;
+    fn get_col(&self) -> usize;
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StrAtLine<'a> {
     pub s: &'a str,
@@ -13,6 +19,62 @@ pub struct StringAtLine {
     pub s: String,
     pub line: usize,
     pub col: usize,
+}
+
+impl<'aa> SpannedStr for StrAtLine<'aa> {
+    fn get_str<'a>(&'a self) -> &'a str {
+        self.s
+    }
+
+    fn get_line(&self) -> usize {
+        self.line
+    }
+
+    fn get_col(&self) -> usize {
+        self.col
+    }
+}
+
+impl SpannedStr for StringAtLine {
+    fn get_str<'a>(&'a self) -> &'a str {
+        self.s.as_str()
+    }
+
+    fn get_line(&self) -> usize {
+        self.line
+    }
+
+    fn get_col(&self) -> usize {
+        self.col
+    }
+}
+
+impl<'aa> SpannedStr for &StrAtLine<'aa> {
+    fn get_str<'a>(&'a self) -> &'a str {
+        self.s
+    }
+
+    fn get_line(&self) -> usize {
+        self.line
+    }
+
+    fn get_col(&self) -> usize {
+        self.col
+    }
+}
+
+impl SpannedStr for &StringAtLine {
+    fn get_str<'a>(&'a self) -> &'a str {
+        self.s.as_str()
+    }
+
+    fn get_line(&self) -> usize {
+        self.line
+    }
+
+    fn get_col(&self) -> usize {
+        self.col
+    }
 }
 
 impl StringAtLine {
