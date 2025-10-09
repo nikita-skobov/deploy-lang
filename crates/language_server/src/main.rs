@@ -84,8 +84,16 @@ impl<'a> Logger for CodeLogger<'a> {
 
 fn check_dcl_file<'a>(diagnostics: &mut Vec<Diagnostic>, valid_sections: &Vec<Section<'a>>, connection: &Connection) {
     let clg = CodeLogger { connection };
-    if let Err(e) = dcl_language::parse::sections_to_dcl_file_with_logger(valid_sections, clg) {
-        diagnostics.push(spanned_diag_to_lsp_diag(e));
+    match dcl_language::parse::sections_to_dcl_file_with_logger(valid_sections, clg) {
+        Ok(dcl) => {
+            let spanned_diag = dcl_language::validate::validate_dcl_file(&dcl);
+            for diag in spanned_diag {
+                diagnostics.push(spanned_diag_to_lsp_diag(diag));
+            }
+        }
+        Err(e) => {
+            diagnostics.push(spanned_diag_to_lsp_diag(e));
+        }
     }
 }
 
