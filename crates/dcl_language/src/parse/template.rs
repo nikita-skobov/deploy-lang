@@ -11,10 +11,10 @@ pub struct TemplateSection {
     /// a template must have a create subsection. it is the only required
     /// subsection
     pub create: Transition,
-    /// a template can have multiple update subsections.
-    /// if a template does not have any update subsections,
+    /// a template can have optionally have an update section.
+    /// if a template does not have an update section
     /// this will be empty
-    pub update: Vec<Transition>,
+    pub update: Option<Transition>,
     /// a delete subsection is optional, not all templates will provide it
     pub delete: Option<Transition>,
 
@@ -24,9 +24,16 @@ pub struct TemplateSection {
 
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Transition {
-    pub before_directives: Vec<Directive>,
-    pub after_directives: Vec<Directive>,
-    pub cli_commands: Vec<CliCommand>,
+    /// a transition can have directives itself, in addition
+    /// to directives per each command
+    pub directives: Vec<Directive>,
+    pub cli_commands: Vec<CliCommandWithDirectives>,
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct CliCommandWithDirectives {
+    pub directives: Vec<Directive>,
+    pub cmd: CliCommand,
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -115,7 +122,6 @@ pub fn parse_lines_to_create_transition<'a>(
         let diag = SpannedDiagnostic::new(format!("templates cannot have multiple create subsections"), line_index, 999);
         return Err(diag);
     }
-    // TODO: support options next to "create" keyword
     let first_command = parse_command(lines)?;
     // must have at least 1 command
     let first_command = match first_command {
@@ -130,9 +136,8 @@ pub fn parse_lines_to_create_transition<'a>(
         commands.push(command);
     }
     template_section.create = Transition {
-        before_directives: vec![],
-        after_directives: vec![],
         cli_commands: commands,
+        ..Default::default()
     };
     template_section.create_was_set = true;
     Ok(())
@@ -153,7 +158,7 @@ fn get_prefix(s: &str) -> String {
 
 pub fn parse_command<'a>(
     lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
-) -> Result<Option<CliCommand>, SpannedDiagnostic> {
+) -> Result<Option<CliCommandWithDirectives>, SpannedDiagnostic> {
     let (command_line, indent_prefix) = match lines.peek() {
         Some(l) => {
             // check if its an empty line with whitespace:
@@ -229,7 +234,8 @@ pub fn parse_command<'a>(
         }
     }
 
-    Ok(Some(CliCommand { command, prefix_args, arg_transforms }))
+    let cmd = CliCommand { command, prefix_args, arg_transforms };
+    Ok(Some(CliCommandWithDirectives { directives: vec![], cmd }))
 }
 
 #[cfg(test)]
@@ -279,7 +285,7 @@ template something
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates[0].create.cli_commands[0].arg_transforms.len(), 3);
+        assert_eq!(dcl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 3);
     }
 
     #[test]
@@ -316,9 +322,9 @@ template something
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
         assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
-        assert_eq!(dcl.templates[0].create.cli_commands[0].arg_transforms.len(), 2);
-        assert_eq!(dcl.templates[0].create.cli_commands[1].arg_transforms.len(), 2);
-        assert_eq!(dcl.templates[0].create.cli_commands[2].arg_transforms.len(), 2);
+        assert_eq!(dcl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 2);
+        assert_eq!(dcl.templates[0].create.cli_commands[1].cmd.arg_transforms.len(), 2);
+        assert_eq!(dcl.templates[0].create.cli_commands[2].cmd.arg_transforms.len(), 2);
     }
 }
 
@@ -339,5 +345,18 @@ template aws_iam_policy
       policy-arn $.output.Policy.Arn
       version-id $.output.DefaultVersionId
 
+template aws_lambda_function
+    create
+        aws lambda create-function
+            ... $.input
+    update
+        @diff $.input.zip-file
+        @notdiff $.input.function-name
+        aws lambda update-function-code
+        @notdiff $.input.zip-file
+        @notdiff $.input.function-name
+        aws lambda update-function-configuration
+            ... $.input
+            ! zip-file
 
 */

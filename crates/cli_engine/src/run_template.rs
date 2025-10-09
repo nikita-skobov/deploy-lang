@@ -15,14 +15,14 @@ pub async fn create(
     let mut out_val = serde_json::Value::Object(Default::default());
     // TODO: process directives...
     for (i, command) in transition.cli_commands.drain(..).enumerate() {
-        let arg_set = create_arg_set(&input, &command.arg_transforms)
+        let arg_set = create_arg_set(&input, &command.cmd.arg_transforms)
             .map_err(|e| format!(
                 "resource '{}' failed to create arg set from template '{}' create[{}]: {}",
                 resource_name,
                 template_name,
                 i, e
             ))?;
-        let val = run_command(arg_set, command).await
+        let val = run_command(arg_set, command.cmd).await
             .map_err(|e| format!(
                 "resource '{}' failed to run create[{}] command from template '{}': {}",
                 resource_name,

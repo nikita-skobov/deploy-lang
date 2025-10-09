@@ -603,7 +603,7 @@ mod test {
 
     use super::*;
     use assert_matches::assert_matches;
-    use dcl_language::parse::template::{ArgTransform, CliCommand};
+    use dcl_language::parse::template::{ArgTransform, CliCommand, CliCommandWithDirectives};
 
     #[test]
     fn can_determine_createable_resources() {
@@ -1303,7 +1303,7 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
-        template.create.cli_commands.push(cli_cmd);
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         dcl.templates.push(template);
         let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
@@ -1337,7 +1337,7 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
-        template.create.cli_commands.push(cli_cmd);
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         dcl.templates.push(template);
         let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 2);
@@ -1384,7 +1384,7 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
-        template.create.cli_commands.push(cli_cmd);
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         dcl.templates.push(template);
         let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 2);
@@ -1430,7 +1430,7 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
-        template.create.cli_commands.push(cli_cmd);
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         dcl.templates.push(template);
         let err = perform_update(logger, dcl, state).await.expect_err("it should error");
         assert_eq!(err, "resource 'B' currently references template 'different template' but it was previously deployed with template 'template'");
