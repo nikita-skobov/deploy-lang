@@ -2,6 +2,7 @@
 //! this module defines the shape of a resource section
 
 use json_with_positions::{CharIterator, Value};
+use str_at_line::StringAtLine;
 
 use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
 
@@ -11,9 +12,9 @@ pub const SECTION_TYPE: &str = "resource";
 pub struct ResourceSection {
     /// name of the resource to be created/updated/deleted. must be unique
     /// across all resources
-    pub resource_name: String,
+    pub resource_name: StringAtLine,
     /// name of the template that this resource should be passed into
-    pub template_name: String,
+    pub template_name: StringAtLine,
     pub input: Value,
 }
 
@@ -30,18 +31,18 @@ pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
             if !resource_name.s.ends_with(")") {
                 return Err(SpannedDiagnostic::new("resource name must be inside parentheses".to_string(), section.start_line, first_line_len));
             }
-            let mut resource_name = resource_name.to_string();
+            let mut resource_name = resource_name.to_owned();
             resource_name.pop();
-            (l.trim().to_string(), resource_name)
+            (l.trim().to_owned(), resource_name)
         },
         None => {
             return Err(SpannedDiagnostic::new("resource must have a template and a name. example `resource my_template(my_resource)`".to_string(), section.start_line, first_line_len));
         }
     };
-    if template_name.is_empty() {
+    if template_name.s.is_empty() {
         return Err(SpannedDiagnostic::new("resource missing template name".to_string(), section.start_line, first_line_len));
     }
-    if resource_name.is_empty() {
+    if resource_name.s.is_empty() {
         return Err(SpannedDiagnostic::new("resource missing name".to_string(), section.start_line, first_line_len));
     }
     if section.body.is_empty() {

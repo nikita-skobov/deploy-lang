@@ -176,7 +176,7 @@ pub fn get_transitionable_resources(
     let mut out = Vec::with_capacity(state.resources.len());
     let mut done_resources = HashMap::new();
     for resource in dcl.resources.drain(..) {
-        match state.resources.remove(&resource.resource_name) {
+        match state.resources.remove(&resource.resource_name.s) {
             Some(state_entry) => {
                 // if we can determine this resource has not changed, then we can omit it
                 // from the transitionable resources:
@@ -579,13 +579,13 @@ pub async fn transition_single(
         TransitionableResource::Create { current_entry } => {
             let output = run_template::create(
                 logger,
-                &current_entry.resource_name,
+                current_entry.resource_name.as_str(),
                 &template.template_name.s,
                 template.create,
                 current_input.clone(),
-            ).await.map_err(|e| (current_entry.resource_name.clone(), e))?;
+            ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
             Ok(ResourceInState {
-                resource_name: current_entry.resource_name,
+                resource_name: current_entry.resource_name.s,
                 template_name: template.template_name.s,
                 last_input: current_input,
                 output,
@@ -610,8 +610,8 @@ mod test {
         let mut dcl = DclFile::default();
         let mut state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "a".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "a".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "a": "a"
             }"#).unwrap(),
@@ -648,8 +648,8 @@ mod test {
         let mut dcl = DclFile::default();
         let mut state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "a".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "a".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "a": "this current input != the resource's last input"
             }"#).unwrap(),
@@ -673,8 +673,8 @@ mod test {
         let mut dcl = DclFile::default();
         let mut state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "a".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "a".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "a": $.i.depend.on.some.other.resource
             }"#).unwrap(),
@@ -700,8 +700,8 @@ mod test {
         let mut dcl = DclFile::default();
         let mut state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "a".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "a".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "a": {"v1": "v1", "v2": "v2" }
             }"#).unwrap(),
@@ -738,16 +738,16 @@ mod test {
 
         // resources to be created because it doesnt have corresponding state entry:
         dcl.resources.push(ResourceSection {
-            resource_name: "a".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "a".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "a": "a"
             }"#).unwrap(),
         });
         // resource to be updated because its state entry differs from current:
         dcl.resources.push(ResourceSection {
-            resource_name: "b".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "b".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "b": "b"
             }"#).unwrap(),
@@ -792,8 +792,8 @@ mod test {
         let dcl = DclFile::default();
         // resources to be created because it doesnt have corresponding state entry:
         let r = ResourceSection {
-            resource_name: "a".to_string(),
-            template_name: "t".to_string(),
+            resource_name: "a".into(),
+            template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
                 "a": "a"
             }"#).unwrap(),
@@ -825,8 +825,8 @@ mod test {
         let current = TrWithTemplate {
             tr: TransitionableResource::Create {
                 current_entry: ResourceSection {
-                    resource_name: "a".to_string(),
-                    template_name: "template".to_string(),
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $.resourceB.output.name,
                         "thing2": $.resourceC.input.something
@@ -847,8 +847,8 @@ mod test {
         let current = TrWithTemplate {
             tr: TransitionableResource::Create {
                 current_entry: ResourceSection {
-                    resource_name: "a".to_string(),
-                    template_name: "template".to_string(),
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $['resourceB'].output.name,
                         "thing2": $["resourceC"].input.something
@@ -869,8 +869,8 @@ mod test {
         let current = TrWithTemplate {
             tr: TransitionableResource::Create {
                 current_entry: ResourceSection {
-                    resource_name: "a".to_string(),
-                    template_name: "template".to_string(),
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $[0].output.name
                     }"#).unwrap(),
@@ -884,8 +884,8 @@ mod test {
         let current = TrWithTemplate {
             tr: TransitionableResource::Create {
                 current_entry: ResourceSection {
-                    resource_name: "a".to_string(),
-                    template_name: "template".to_string(),
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $..output.name
                     }"#).unwrap(),
@@ -902,8 +902,8 @@ mod test {
         let current = TrWithTemplate {
             tr: TransitionableResource::Update {
                 current_entry: ResourceSection {
-                    resource_name: "a".to_string(),
-                    template_name: "template".to_string(),
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $.resourceB.output.name,
                         "thing2": $.resourceC.input.something
@@ -949,8 +949,8 @@ mod test {
         ($name: literal; $input: literal) => {
             TrWithTemplate {
                 tr: TransitionableResource::Create { current_entry: ResourceSection {
-                    resource_name: $name.to_string(),
-                    template_name: "t".to_string(),
+                    resource_name: $name.into(),
+                    template_name: "t".into(),
                     input: json_with_positions::parse_json_value($input).unwrap(),
                 } },
                 template: Default::default()
@@ -1294,8 +1294,8 @@ mod test {
         let mut dcl = DclFile::default();
         let state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "A".to_string(),
-            template_name: "template".to_string(),
+            resource_name: "A".into(),
+            template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
         });
         let mut template = TemplateSection::default();
@@ -1323,13 +1323,13 @@ mod test {
         let mut dcl = DclFile::default();
         let state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "A".to_string(),
-            template_name: "template".to_string(),
+            resource_name: "A".into(),
+            template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
         });
         dcl.resources.push(ResourceSection {
-            resource_name: "B".to_string(),
-            template_name: "template".to_string(),
+            resource_name: "B".into(),
+            template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
         });
         let mut template = TemplateSection::default();
@@ -1360,8 +1360,8 @@ mod test {
         let mut dcl = DclFile::default();
         let mut state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "A".to_string(),
-            template_name: "template".to_string(),
+            resource_name: "A".into(),
+            template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
         });
         // B has been deployed before, it should cause an update
@@ -1369,8 +1369,8 @@ mod test {
         // in this case, B should NOT be updated because its current input will be resolved
         // (after A completes) to be the exact same as its last input
         dcl.resources.push(ResourceSection {
-            resource_name: "B".to_string(),
-            template_name: "template".to_string(),
+            resource_name: "B".into(),
+            template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
         });
         state.resources.insert("B".to_string(), ResourceInState {
@@ -1406,8 +1406,8 @@ mod test {
         let mut dcl = DclFile::default();
         let mut state = StateFile::default();
         dcl.resources.push(ResourceSection {
-            resource_name: "A".to_string(),
-            template_name: "template".to_string(),
+            resource_name: "A".into(),
+            template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
         });
         // B has been deployed before, it should cause an update
@@ -1415,8 +1415,8 @@ mod test {
         // in this case, B should NOT be updated because its current input will be resolved
         // (after A completes) to be the exact same as its last input
         dcl.resources.push(ResourceSection {
-            resource_name: "B".to_string(),
-            template_name: "different template".to_string(),
+            resource_name: "B".into(),
+            template_name: "different template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
         });
         state.resources.insert("B".to_string(), ResourceInState {

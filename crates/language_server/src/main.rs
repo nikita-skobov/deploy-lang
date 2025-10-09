@@ -180,7 +180,7 @@ pub fn handle_completion_request_ex<'a>(
     let mut resource_inputs = serde_json::Map::new();
     for resource in dcl.resources.iter() {
         let val = resource.input.clone().to_serde_json_value();
-        resource_inputs.insert(resource.resource_name.clone(), val);
+        resource_inputs.insert(resource.resource_name.s.clone(), val);
     }
     let all_resource_inputs = serde_json::Value::Object(resource_inputs);
 

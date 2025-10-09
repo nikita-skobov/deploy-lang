@@ -15,6 +15,25 @@ pub struct StringAtLine {
     pub col: usize,
 }
 
+impl StringAtLine {
+    pub fn pop(&mut self) -> Option<char> {
+        let out = self.s.pop();
+        if out.is_some() {
+            self.col -= 1;
+        }
+        out
+    }
+    pub fn as_str<'a>(&'a self) -> &'a str {
+        self.s.as_str()
+    }
+}
+
+impl From<&str> for StringAtLine {
+    fn from(value: &str) -> Self {
+        Self { s: value.to_string(), line: 0, col: 0 }
+    }
+}
+
 impl Hash for StringAtLine {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.s.hash(state);
