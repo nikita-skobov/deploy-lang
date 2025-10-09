@@ -71,9 +71,16 @@ pub enum ArgTransform {
     Add(StringAtLine, jsonpath_rust::parser::model::JpQuery),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+/// a directive consists of an @ symbol
+/// a keyword "kw" in all variants that is used to differentiate the type of directive.
+/// and is followed by args which are specific to each directive.
+/// the "kw" and the @ symbol is the only mandatory part of a directive
+/// and the kw is used to get the string span of the directive.
+/// a directive must be on a single line, and therefore if we wish to show
+/// diagnostics on an invalid directive we can infer the line from the "kw"
+#[derive(Debug, PartialEq, Clone)]
 pub enum Directive {
-
+    Diff { kw: StringAtLine, query: jsonpath_rust::parser::model::JpQuery },
 }
 
 pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
@@ -156,9 +163,64 @@ fn get_prefix(s: &str) -> String {
     out
 }
 
+pub fn parse_directive<'a>(
+    line: StrAtLine<'a>
+) -> Result<Directive, SpannedDiagnostic> {
+    let (at_char, rest) = line.split_at_checked(1)
+        .ok_or_else(|| SpannedDiagnostic::new("directive must start with '@' character", line.line, 999))?;
+    if at_char.s != "@" {
+        return Err(SpannedDiagnostic::new("directive must start with the '@' character", at_char.line, at_char.col + 1));
+    }
+    let (kw, rest) = match rest.split_once(" ") {
+        Some((l, r)) => (l, r),
+        None => (rest, StrAtLine { s: "", col: rest.col, line: rest.line }),
+    };
+    match kw.s {
+        "diff" => {
+            let query = jsonpath_rust::parser::parse_json_path(rest.s)
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse diff directive json path query: {:?}", e)))?;
+            Ok(Directive::Diff { kw: kw.to_owned(), query })
+        }
+        unknown_kw => {
+            Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
+        }
+    }
+}
+
+/// keeps peeking lines until a non-directive line is found
+/// a directive line must:
+/// 1. have whitespace indentation
+/// 2. start with an @ symbol
+/// as soon as a line is found that doesnt meet one of those conditions
+/// then this returns what it's parsed so far
+pub fn parse_all_directives<'a>(
+    lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>
+) -> Result<Vec<Directive>, SpannedDiagnostic> {
+    let mut out = vec![];
+    loop {
+        match lines.peek() {
+            Some(l) => {
+                let indent_prefix = get_prefix(l.s);
+                if indent_prefix.is_empty() {
+                    break;
+                }
+                let trimmed = l.trim();
+                if !trimmed.s.starts_with('@') {
+                    break;
+                }
+                let _ = lines.next();
+                out.push(parse_directive(trimmed)?);
+            }
+            None => break
+        }
+    }
+    Ok(out)
+}
+
 pub fn parse_command<'a>(
     lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
 ) -> Result<Option<CliCommandWithDirectives>, SpannedDiagnostic> {
+    let directives = parse_all_directives(lines)?;
     let (command_line, indent_prefix) = match lines.peek() {
         Some(l) => {
             // check if its an empty line with whitespace:
@@ -235,12 +297,13 @@ pub fn parse_command<'a>(
     }
 
     let cmd = CliCommand { command, prefix_args, arg_transforms };
-    Ok(Some(CliCommandWithDirectives { directives: vec![], cmd }))
+    Ok(Some(CliCommandWithDirectives { directives, cmd }))
 }
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dcl_file};
+    use crate::parse::{parse_document_to_sections, sections_to_dcl_file, template::Directive};
+    use assert_matches::assert_matches;
 
     #[test]
     fn should_error_on_invalid_arg_transform() {
@@ -302,6 +365,50 @@ template something
         let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
         assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
     }
+
+    #[test]
+    fn can_parse_multiple_commands_each_with_directives() {
+        let document = r#"
+template something
+  create
+    @diff $
+    echo
+    @diff $.input
+    cat
+    @diff $.input.something[1]
+    @diff $.input.otherThing
+    ls
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let mut dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
+        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        assert_eq!(next.directives.len(), 1);
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+            assert_eq!(kw.s, "diff");
+            assert_eq!(query.to_string(), "$");
+        });
+        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        assert_eq!(next.directives.len(), 1);
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+            assert_eq!(kw.s, "diff");
+            assert_eq!(query.to_string(), "$input");
+        });
+        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        assert_eq!(next.directives.len(), 2);
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+            assert_eq!(kw.s, "diff");
+            // TODO: wrapper library for jsonpath_rust: its to_string impl omits segment delimiters...
+            assert_eq!(query.to_string(), "$inputsomething1");
+        });
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+            assert_eq!(kw.s, "diff");
+            assert_eq!(query.to_string(), "$inputotherThing");
+        });
+        assert_eq!(next.cmd.command.s, "ls");
+    }
+
 
     #[test]
     fn can_parse_multiple_commands_with_multiple_arg_transforms_each() {

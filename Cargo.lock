@@ -148,6 +148,7 @@ dependencies = [
 name = "dcl_language"
 version = "0.1.0"
 dependencies = [
+ "assert_matches",
  "json_with_positions",
  "jsonpath-rust",
  "serde",
