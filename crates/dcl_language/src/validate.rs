@@ -33,3 +33,84 @@ pub fn resource_has_corresponding_template(resource: &ResourceSection, dcl: &Dcl
 //     }
 //     Ok(())
 // }
+
+#[cfg(test)]
+mod test {
+    use crate::parse_and_validate;
+
+    use super::*;
+
+    /// extracts a diagnostics into a tuple containing
+    /// (the message, the source string that it came from)
+    fn extract_source(diag: SpannedDiagnostic, src: &str) -> (String, String) {
+        let mut lines: Vec<_> = src.lines().collect();
+        if diag.span.start.line == diag.span.end.line {
+            let line = lines.remove(diag.span.start.line);
+            let mut out_s = String::new();
+            for (i, c) in line.chars().enumerate() {
+                if i >= diag.span.start.column && i < diag.span.end.column {
+                    out_s.push(c);
+                }
+            }
+            (diag.message, out_s)
+        } else {
+            let mut out_s = String::new();
+            for (i, line) in lines.iter().enumerate() {
+                if i == diag.span.start.line {
+                    for (j, c) in line.chars().enumerate() {
+                        if j >= diag.span.start.column {
+                            out_s.push(c);
+                        }
+                    }
+                    out_s.push('\n');
+                } else if i > diag.span.start.line && i < diag.span.end.line {
+                    out_s.push_str(&line);
+                    out_s.push('\n');
+                } else if i == diag.span.end.line {
+                    for (j, c) in line.chars().enumerate() {
+                        if j < diag.span.end.column {
+                            out_s.push(c);
+                        }
+                    }
+                }
+            }
+            (diag.message, out_s)
+        }
+    }
+
+    fn extract_sources(mut diagnostics: Vec<SpannedDiagnostic>, src: &str) -> Vec<String> {
+        diagnostics.drain(..).map(|diag| {
+            let out = extract_source(diag, src);
+            out.1
+        }).collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn invalid_template_reference_works() {
+        let file = r#"
+resource nonexistant_template(my_resource)
+    {}
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let source_errors = extract_sources(diagnostics, file);
+        assert_eq!(source_errors, vec![
+            "nonexistant_template"
+        ]);
+    }
+
+    #[test]
+    fn invalid_json_works() {
+        let file = r#"
+resource nonexistant_template(my_resource)
+    {
+        "a
+    }
+    # not included in the error
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let source_errors = extract_sources(diagnostics, file);
+        assert_eq!(source_errors, vec![
+            "    {\n        \"a\n    }"
+        ]);
+    }
+}
