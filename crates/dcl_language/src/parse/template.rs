@@ -80,7 +80,20 @@ pub enum ArgTransform {
 /// diagnostics on an invalid directive we can infer the line from the "kw"
 #[derive(Debug, PartialEq, Clone)]
 pub enum Directive {
+    /// only relevant to update commands: a diff directive
+    /// requires that the value the query resolves to must be different
+    /// than the same value from the last time this resource was transitioned.
+    /// authors can specify multiple diff directives, which are ANDed together.
+    /// eg if an author specifies "@diff $.x @diff $.y" both fields x and y MUST
+    /// be different for the command to be ran
     Diff { kw: StringAtLine, query: jsonpath_rust::parser::model::JpQuery },
+    /// only relevant to update commands: a notdiff directitve
+    /// requires that the value the query resolves to must be the same
+    /// as the value from the last time this resource was transitioned.
+    /// authors can specify multiple diff directives, which are ANDed together.
+    /// eg if an author specifies "@diff $.x @notdiff $.y" then x MUST be different and
+    /// y MUST be the same for the command to be ran
+    Notdiff { kw: StringAtLine, query: jsonpath_rust::parser::model::JpQuery },
 }
 
 pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
@@ -180,6 +193,11 @@ pub fn parse_directive<'a>(
             let query = jsonpath_rust::parser::parse_json_path(rest.s)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse diff directive json path query: {:?}", e)))?;
             Ok(Directive::Diff { kw: kw.to_owned(), query })
+        }
+        "notdiff" => {
+            let query = jsonpath_rust::parser::parse_json_path(rest.s)
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse notdiff directive json path query: {:?}", e)))?;
+            Ok(Directive::Notdiff { kw: kw.to_owned(), query })
         }
         unknown_kw => {
             Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
@@ -376,7 +394,7 @@ template something
     @diff $.input
     cat
     @diff $.input.something[1]
-    @diff $.input.otherThing
+    @notdiff $.input.otherThing
     ls
 "#;
         let mut sections = parse_document_to_sections(document);
@@ -402,8 +420,8 @@ template something
             // TODO: wrapper library for jsonpath_rust: its to_string impl omits segment delimiters...
             assert_eq!(query.to_string(), "$inputsomething1");
         });
-        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
-            assert_eq!(kw.s, "diff");
+        assert_matches!(next.directives.remove(0), Directive::Notdiff { kw, query } => {
+            assert_eq!(kw.s, "notdiff");
             assert_eq!(query.to_string(), "$inputotherThing");
         });
         assert_eq!(next.cmd.command.s, "ls");
