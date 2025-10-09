@@ -19,22 +19,7 @@ fn main() {
 fn main_or_err(
     dcl_file: String,
 ) -> Result<(), Vec<SpannedDiagnostic>> {
-    let sections = dcl_language::parse::parse_document_to_sections(&dcl_file);
-    let mut filtered_sections = Vec::with_capacity(sections.len());
-    let mut err_diagnostics = Vec::with_capacity(sections.len());
-    for section in sections {
-        match section {
-            Ok(s) => filtered_sections.push(s),
-            Err(e) => err_diagnostics.push(e),
-        }
-    }
-    // error early if parsing failures:
-    if !err_diagnostics.is_empty() {
-        return Err(err_diagnostics);
-    }
-
-    let dcl = dcl_language::parse::sections_to_dcl_file(&filtered_sections)
-        .map_err(|e| vec![e])?;
+    let dcl = dcl_language::parse_and_validate(dcl_file)?;
 
     cli_engine::load_state(&dcl).map_err(|e| vec![e])?;
     println!("{:#?}", dcl);
