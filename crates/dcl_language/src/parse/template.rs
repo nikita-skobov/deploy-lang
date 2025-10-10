@@ -83,17 +83,48 @@ pub enum Directive {
     /// only relevant to update commands: a diff directive
     /// requires that the value the query resolves to must be different
     /// than the same value from the last time this resource was transitioned.
-    /// authors can specify multiple diff directives, which are ANDed together.
-    /// eg if an author specifies "@diff $.x @diff $.y" both fields x and y MUST
-    /// be different for the command to be ran
-    Diff { kw: StringAtLine, query: jsonpath_rust::parser::model::JpQuery },
-    /// only relevant to update commands: a notdiff directitve
+    /// authors can specify multiple queries in one directives optionally by placing them in a json array
+    /// such as [$.a, $.b], which are ANDed together.
+    /// multiple diff and same directives are ORed together
+    /// eg if an author specifies 
+    /// 
+    /// ```text
+    /// @diff [$.a, $.b]
+    /// @diff $.c
+    /// ```
+    /// then the command below this directive will be ran if the value of $.c is different from prev and current
+    /// OR if the value of $.a AND the value of $.b is different from prev and current
+    Diff { kw: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
+    /// only relevant to update commands: a same directitve
     /// requires that the value the query resolves to must be the same
     /// as the value from the last time this resource was transitioned.
-    /// authors can specify multiple diff directives, which are ANDed together.
-    /// eg if an author specifies "@diff $.x @notdiff $.y" then x MUST be different and
-    /// y MUST be the same for the command to be ran
-    Notdiff { kw: StringAtLine, query: jsonpath_rust::parser::model::JpQuery },
+    /// authors can specify multiple quries, which are ANDed together.
+    /// multiple diff and same directives are ORed together
+    /// eg if an author specifies
+    /// 
+    /// ```text
+    /// @same [$.a, $.b]
+    /// @same $.c
+    /// ```
+    /// 
+    /// then the command below this directive will be ran if the value of $.c is the same in prev and current
+    /// OR if the value of $.a AND the value of $.b is the same in prev and current
+    Same { kw: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
+
+    // TODO: support a diff same directive that ands together same and diff conditions
+    // as otherwise there's no way to support running a command with multiple same/diff conditions
+    // anded together. at the root level they are ORed together
+    // /// only relevant to update commands: a combined same and diff directive
+    // /// where all conditions are ANDed together. the syntax is an object with two keys
+    // /// "same" and "diff". the value of each key must be a json path query, or an array of json path queries
+    // /// eg if an author specifies
+    // /// ```text
+    // /// @samediff {"same": [$.a, $.b], "diff": $.c}
+    // /// ```
+    // /// 
+    // /// then the command below this directive will be ran if the value of $.a AND $.b are the same in prev and current
+    // /// AND the value of $.c is different in prev than current
+    // SameDiff { kw: StringAtLine, same: Vec<jsonpath_rust::parser::model::JpQuery>, diff: Vec<jsonpath_rust::parser::model::JpQuery> },
 }
 
 pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
@@ -224,19 +255,49 @@ pub fn parse_directive<'a>(
     };
     match kw.s {
         "diff" => {
-            let query = jsonpath_rust::parser::parse_json_path(rest.s)
+            let query = parse_json_directive_query(rest.s)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse diff directive json path query: {:?}", e)))?;
             Ok(Directive::Diff { kw: kw.to_owned(), query })
         }
-        "notdiff" => {
-            let query = jsonpath_rust::parser::parse_json_path(rest.s)
-                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse notdiff directive json path query: {:?}", e)))?;
-            Ok(Directive::Notdiff { kw: kw.to_owned(), query })
+        "same" => {
+            let query = parse_json_directive_query(rest.s)
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse same directive json path query: {:?}", e)))?;
+            Ok(Directive::Same { kw: kw.to_owned(), query })
         }
         unknown_kw => {
             Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
         }
     }
+}
+
+pub fn parse_json_directive_query(s: &str) -> Result<Vec<jsonpath_rust::parser::model::JpQuery>, String> {
+    let val = json_with_positions::parse_json_value(s)?;
+    let mut array_of_json_path_strs: Vec<json_with_positions::Value>;
+    match val {
+        json_with_positions::Value::JsonPath { pos, val, .. } => {
+            array_of_json_path_strs = vec![json_with_positions::Value::JsonPath { pos, val }];
+        }
+        json_with_positions::Value::Array { val, .. } => {
+            array_of_json_path_strs = val;
+        }
+        x => return Err(format!("expected directive to contain a json path or array of json paths, instead found '{:?}'", x)),
+    }
+    let mut out = Vec::with_capacity(array_of_json_path_strs.len());
+    for (i, json_path_str) in array_of_json_path_strs.drain(..).enumerate() {
+        if let json_with_positions::Value::JsonPath { val, .. } = &json_path_str {
+            let jpq = jsonpath_rust::parser::parse_json_path(&val.s)
+                .map_err(|e| format!("failed to parse '{}' as json path query: {:?}", val.s, e))?;
+            out.push(jpq);
+        } else {
+            return Err(format!(
+                "expected directive to contain a json path or array of json paths. value of array[{}] was '{:?}' which is not a json path",
+                i,
+                json_path_str
+            ))
+        }
+    }
+
+    Ok(out)
 }
 
 /// keeps peeking lines until a non-directive line is found
@@ -428,7 +489,7 @@ template something
     @diff $.input
     cat
     @diff $.input.something[1]
-    @notdiff $.input.otherThing
+    @same $.input.otherThing
     ls
 "#;
         let mut sections = parse_document_to_sections(document);
@@ -439,28 +500,60 @@ template something
         assert_eq!(next.directives.len(), 1);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
-            assert_eq!(query.to_string(), "$");
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$");
         });
         let mut next = dcl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 1);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
-            assert_eq!(query.to_string(), "$input");
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$input");
         });
         let mut next = dcl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 2);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
             // TODO: wrapper library for jsonpath_rust: its to_string impl omits segment delimiters...
-            assert_eq!(query.to_string(), "$inputsomething1");
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$inputsomething1");
         });
-        assert_matches!(next.directives.remove(0), Directive::Notdiff { kw, query } => {
-            assert_eq!(kw.s, "notdiff");
-            assert_eq!(query.to_string(), "$inputotherThing");
+        assert_matches!(next.directives.remove(0), Directive::Same { kw, query } => {
+            assert_eq!(kw.s, "same");
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$inputotherThing");
         });
         assert_eq!(next.cmd.command.s, "ls");
     }
 
+    #[test]
+    fn can_parse_multiple_jsonpath_queries_in_directive() {
+        let document = r#"
+template something
+  create
+    @diff [$.a, $]
+    @same [$, $.a]
+    echo
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let mut dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates[0].create.cli_commands.len(), 1);
+        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        assert_eq!(next.directives.len(), 2);
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+            assert_eq!(kw.s, "diff");
+            assert_eq!(query.len(), 2);
+            assert_eq!(&query[0].to_string(), "$a");
+            assert_eq!(&query[1].to_string(), "$");
+        });
+        assert_matches!(next.directives.remove(0), Directive::Same { kw, query } => {
+            assert_eq!(kw.s, "same");
+            assert_eq!(query.len(), 2);
+            assert_eq!(&query[0].to_string(), "$");
+            assert_eq!(&query[1].to_string(), "$a");
+        });
+    }
 
     #[test]
     fn can_parse_multiple_commands_with_multiple_arg_transforms_each() {
@@ -495,10 +588,10 @@ template aws_lambda_function
             ... $.input
     update
         @diff $.input.zipfile
-        @notdiff $.input.functionname
+        @same $.input.functionname
         aws lambda update-function-code
-        @notdiff $.input.zipfile
-        @notdiff $.input.functionname
+        @same $.input.zipfile
+        @same $.input.functionname
         aws lambda update-function-configuration
             ... $.input
             ! zip-file
@@ -520,20 +613,24 @@ template aws_lambda_function
         assert_eq!(first_command.cmd.command.s, "aws");
         assert_eq!(first_command.cmd.prefix_args.join(" "), "lambda update-function-code");
         assert_matches!(&first_command.directives[0], Directive::Diff { query, .. } => {
-            assert_eq!(query.to_string(), "$inputzipfile");
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$inputzipfile");
         });
-        assert_matches!(&first_command.directives[1], Directive::Notdiff { query, .. } => {
-            assert_eq!(query.to_string(), "$inputfunctionname");
+        assert_matches!(&first_command.directives[1], Directive::Same { query, .. } => {
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$inputfunctionname");
         });
         assert!(first_command.cmd.arg_transforms.is_empty());
         let second_command = update_section.cli_commands.remove(0);
         assert_eq!(second_command.cmd.command.s, "aws");
         assert_eq!(second_command.cmd.prefix_args.join(" "), "lambda update-function-configuration");
-        assert_matches!(&second_command.directives[0], Directive::Notdiff { query, .. } => {
-            assert_eq!(query.to_string(), "$inputzipfile");
+        assert_matches!(&second_command.directives[0], Directive::Same { query, .. } => {
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$inputzipfile");
         });
-        assert_matches!(&second_command.directives[1], Directive::Notdiff { query, .. } => {
-            assert_eq!(query.to_string(), "$inputfunctionname");
+        assert_matches!(&second_command.directives[1], Directive::Same { query, .. } => {
+            assert_eq!(query.len(), 1);
+            assert_eq!(&query[0].to_string(), "$inputfunctionname");
         });
         assert_eq!(second_command.cmd.arg_transforms.len(), 2);
         assert_matches!(&second_command.cmd.arg_transforms[0], ArgTransform::Destructure(d) => {
