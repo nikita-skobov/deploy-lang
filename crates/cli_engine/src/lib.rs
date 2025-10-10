@@ -375,6 +375,55 @@ pub fn get_all_transient_dependencies(current: &TrWithTemplate, trs: &[TrWithTem
     map.remove(current.tr.get_resource_name()).ok_or_else(|| format!("resource '{}' not found in map of all resources", current.tr.get_resource_name()))
 }
 
+pub fn error_statically_cannot_perform_transition(
+    resource_name: &str,
+    template_name: &str,
+    transition_type: &str,
+) -> String {
+    return format!(r#"resource '{}' is to be {}d but template '{}' does not define any {} commands
+your options are:
+1. define what a {} behavior should be for template '{}'
+2. if you intend to never {} this resource annotate it with TODO: define some resource directive to prevent {}s
+3. if you want to skip {}s for this resource temporarily, rerun with -- TODO: define cli option prevent {}s for resource by name"#,
+    resource_name, transition_type, template_name, transition_type, transition_type, template_name, transition_type,
+    transition_type, transition_type, transition_type
+    )
+}
+
+pub fn verify_transitions(
+    trs: &[TrWithTemplate]
+) -> Result<(), String> {
+    for tr in trs.iter() {
+        match &tr.tr {
+            // creates are always transitionable because a template must have a create section:
+            TransitionableResource::Create { .. } => {}
+            // need to check that template has an update subsection
+            // otherwise error
+            TransitionableResource::Update { current_entry, .. } => {
+                if tr.template.update.is_none() {
+                    return Err(error_statically_cannot_perform_transition(
+                        current_entry.resource_name.as_str(),
+                        current_entry.template_name.as_str(),
+                        "update"
+                    ))
+                }
+            }
+            // need to check that template has a delete subsection
+            // otherwise error
+            TransitionableResource::Delete { state_entry } => {
+                if tr.template.delete.is_none() {
+                    return Err(error_statically_cannot_perform_transition(
+                        state_entry.resource_name.as_str(),
+                        state_entry.template_name.as_str(),
+                        "delete"
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn perform_update(
     logger: &'static dyn log::Log,
     mut dcl: DclFile,
@@ -385,6 +434,8 @@ pub async fn perform_update(
     let transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
     // next, ensure every resource can be matched with a template. error otherwise:
     let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
+    // ensure every resource to be transitioned *can* be transitioned before starting any tasks:
+    verify_transitions(&transitionable_resources)?;
     // get map of names of resources to a flat list of all transient dependencies of that resource
     let dependency_map = get_all_transient_dependencies_map(&transitionable_resources)?;
     // split out deletes
@@ -1385,6 +1436,7 @@ mod test {
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
+        template.update = Some(Default::default());
         dcl.templates.push(template);
         let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 2);
@@ -1434,6 +1486,50 @@ mod test {
         dcl.templates.push(template);
         let err = perform_update(logger, dcl, state).await.expect_err("it should error");
         assert_eq!(err, "resource 'B' currently references template 'different template' but it was previously deployed with template 'template'");
+    }
+
+    #[tokio::test]
+    async fn perform_update_should_error_if_no_template_section_update() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "A".into(),
+            template_name: "template".into(),
+            input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+        });
+        // A was previously in state, therefore becomes an update
+        let mut resource_in_state = ResourceInState::default();
+        resource_in_state.template_name = "template".to_string();
+        state.resources.insert("A".to_string(), resource_in_state);
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        // template does not have an update subsection. it should error because
+        // A is due to be updated, but template does not support updates
+        dcl.templates.push(template);
+        let error = perform_update(logger, dcl, state).await.expect_err("it should error");
+        assert!(error.starts_with(r#"resource 'A' is to be updated but template 'template' does not define any update commands"#), "{}", error);
+    }
+
+    #[tokio::test]
+    async fn perform_update_should_error_if_no_template_section_delete() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let mut state = StateFile::default();
+        // A was previously in state, but not in dcl file therefore becomes a delete
+        let mut resource_in_state = ResourceInState::default();
+        resource_in_state.template_name = "template".to_string();
+        resource_in_state.resource_name = "A".to_string();
+        state.resources.insert("A".to_string(), resource_in_state);
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        // template does not have a delete subsection. it should error because
+        // A is due to be deleted, but template does not support deletes
+        dcl.templates.push(template);
+        let error = perform_update(logger, dcl, state).await.expect_err("it should error");
+        assert!(error.starts_with(r#"resource 'A' is to be deleted but template 'template' does not define any delete commands"#), "{}", error);
     }
 }
 
