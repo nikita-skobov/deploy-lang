@@ -119,6 +119,10 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         // TODO: allow directives on top of subsections
         if line.s.starts_with("create") {
             parse_lines_as_transition(&mut out, &line, &mut body_iter, "create")?;
+        } else if line.s.starts_with("update") {
+            parse_lines_as_transition(&mut out, &line, &mut body_iter, "update")?;
+        } else if line.s.starts_with("delete") {
+            parse_lines_as_transition(&mut out, &line, &mut body_iter, "delete")?;
         } else {
             let line_index = line.line;
             let diag = SpannedDiagnostic::new(
@@ -143,6 +147,18 @@ pub fn parse_lines_as_transition<'a>(
         let diag = SpannedDiagnostic::new(format!("templates cannot have multiple create subsections"), line_index, 999);
         return Err(diag);
     }
+    if transition_type == "update" && template_section.update.is_some() {
+        // can only have 1 update subsection:
+        let line_index = current_line.line;
+        let diag = SpannedDiagnostic::new(format!("templates cannot have multiple update subsections"), line_index, 999);
+        return Err(diag);
+    }
+    if transition_type == "delete" && template_section.delete.is_some() {
+        // can only have 1 update subsection:
+        let line_index = current_line.line;
+        let diag = SpannedDiagnostic::new(format!("templates cannot have multiple update subsections"), line_index, 999);
+        return Err(diag);
+    }
     let first_command = parse_command(lines)?;
     // must have at least 1 command
     let first_command = match first_command {
@@ -165,10 +181,16 @@ pub fn parse_lines_as_transition<'a>(
             template_section.create_was_set = true;
         }
         "update" => {
-            todo!()
+            template_section.update = Some(Transition {
+                cli_commands: commands,
+                ..Default::default()
+            });
         }
         "delete" | _ => {
-            todo!()
+            template_section.delete = Some(Transition {
+                cli_commands: commands,
+                ..Default::default()
+            });
         }
     }
     Ok(())
@@ -332,7 +354,7 @@ pub fn parse_command<'a>(
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dcl_file, template::Directive};
+    use crate::parse::{parse_document_to_sections, sections_to_dcl_file, template::{ArgTransform, Directive}};
     use assert_matches::assert_matches;
 
     #[test]
@@ -463,10 +485,67 @@ template something
         assert_eq!(dcl.templates[0].create.cli_commands[1].cmd.arg_transforms.len(), 2);
         assert_eq!(dcl.templates[0].create.cli_commands[2].cmd.arg_transforms.len(), 2);
     }
+
+    #[test]
+    fn can_parse_multiple_subsection_types() {
+        let document = r#"
+template aws_lambda_function
+    create
+        aws lambda create-function
+            ... $.input
+    update
+        @diff $.input.zipfile
+        @notdiff $.input.functionname
+        aws lambda update-function-code
+        @notdiff $.input.zipfile
+        @notdiff $.input.functionname
+        aws lambda update-function-configuration
+            ... $.input
+            ! zip-file
+    delete
+        blah blah
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let mut dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
+        assert_eq!(1, dcl.templates.len());
+        let template = dcl.templates.remove(0);
+        assert_eq!(template.template_name.s, "aws_lambda_function");
+        assert!(template.update.is_some());
+        assert!(template.delete.is_some());
+        assert_eq!(template.create.cli_commands.len(), 1);
+        let mut update_section = template.update.unwrap();
+        assert_eq!(update_section.cli_commands.len(), 2);
+        let first_command = update_section.cli_commands.remove(0);
+        assert_eq!(first_command.cmd.command.s, "aws");
+        assert_eq!(first_command.cmd.prefix_args.join(" "), "lambda update-function-code");
+        assert_matches!(&first_command.directives[0], Directive::Diff { query, .. } => {
+            assert_eq!(query.to_string(), "$inputzipfile");
+        });
+        assert_matches!(&first_command.directives[1], Directive::Notdiff { query, .. } => {
+            assert_eq!(query.to_string(), "$inputfunctionname");
+        });
+        assert!(first_command.cmd.arg_transforms.is_empty());
+        let second_command = update_section.cli_commands.remove(0);
+        assert_eq!(second_command.cmd.command.s, "aws");
+        assert_eq!(second_command.cmd.prefix_args.join(" "), "lambda update-function-configuration");
+        assert_matches!(&second_command.directives[0], Directive::Notdiff { query, .. } => {
+            assert_eq!(query.to_string(), "$inputzipfile");
+        });
+        assert_matches!(&second_command.directives[1], Directive::Notdiff { query, .. } => {
+            assert_eq!(query.to_string(), "$inputfunctionname");
+        });
+        assert_eq!(second_command.cmd.arg_transforms.len(), 2);
+        assert_matches!(&second_command.cmd.arg_transforms[0], ArgTransform::Destructure(d) => {
+            assert_eq!(d.to_string(), "$input");
+        });
+        assert_matches!(&second_command.cmd.arg_transforms[1], ArgTransform::Remove(r) => {
+            assert_eq!(r, "zip-file");
+        });
+    }
 }
 
 /*
-
 template aws_iam_policy
   create
     aws iam create-policy
@@ -481,19 +560,4 @@ template aws_iam_policy
     aws iam delete-policy-version
       policy-arn $.output.Policy.Arn
       version-id $.output.DefaultVersionId
-
-template aws_lambda_function
-    create
-        aws lambda create-function
-            ... $.input
-    update
-        @diff $.input.zip-file
-        @notdiff $.input.function-name
-        aws lambda update-function-code
-        @notdiff $.input.zip-file
-        @notdiff $.input.function-name
-        aws lambda update-function-configuration
-            ... $.input
-            ! zip-file
-
 */
