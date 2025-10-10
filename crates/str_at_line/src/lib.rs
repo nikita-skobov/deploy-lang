@@ -230,12 +230,23 @@ impl<'a> StrAtLine<'a> {
     pub fn trim(&self) -> StrAtLine<'a> {
         let mut start_index = 0;
         let mut num_chars_removed_from_start = 0;
+        let mut did_break = false;
         for (index, char) in self.s.char_indices() {
             start_index = index;
             if !char.is_ascii_whitespace() {
+                did_break = true;
                 break;
             }
             num_chars_removed_from_start += 1;
+        }
+        // if we did not break out, then that means the string is entirely ascii whitespace
+        // in which case we can return it trimmed to an empty string:
+        if !did_break {
+            return StrAtLine {
+                s: "",
+                line: self.line,
+                col: self.col
+            }
         }
         let mut end_index = None;
         for (index, char) in self.s.char_indices().rev() {
@@ -504,5 +515,74 @@ line3"#;
         assert_eq!(st.s, "🌏🌏");
         assert_eq!(st.col, 8);
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn trim_whitespace_string_ok() {
+        let s = StrAtLine {
+            s: "   ",
+            line: 1,
+            col: 2,
+        };
+        let s = s.trim();
+        assert_eq!(s.s, "");
+        assert_eq!(s.line, 1);
+        assert_eq!(s.col, 2);
+    }
+
+    #[test]
+    fn trim_whitespace_tab_mixed_string_ok() {
+        let s = StrAtLine {
+            s: "	 	  ",
+            line: 1,
+            col: 2,
+        };
+        let s = s.trim();
+        assert_eq!(s.s, "");
+        assert_eq!(s.line, 1);
+        assert_eq!(s.col, 2);
+    }
+
+    #[test]
+    fn trim_works_left() {
+        let s = StrAtLine {
+            s: "   hello",
+            line: 1,
+            col: 1,
+        };
+        let s = s.trim();
+        assert_eq!(s, "hello");
+        assert_eq!(s.line, 1);
+        // trimming should have advanced the column because we removed 3
+        // spaces, so now the string starts at col 4
+        assert_eq!(s.col, 4);
+    }
+
+    #[test]
+    fn trim_works_right() {
+        let s = StrAtLine {
+            s: "hello   ",
+            line: 1,
+            col: 1,
+        };
+        let s = s.trim();
+        assert_eq!(s, "hello");
+        assert_eq!(s.line, 1);
+        // trimming should have not advanced the column because the
+        // trim happened on the right side
+        assert_eq!(s.col, 1);
+    }
+
+    #[test]
+    fn trim_works_unicode() {
+        let s = StrAtLine {
+            s: " 🗻 ",
+            line: 1,
+            col: 1,
+        };
+        let s = s.trim();
+        assert_eq!(s, "🗻");
+        assert_eq!(s.line, 1);
+        assert_eq!(s.col, 2);
     }
 }
