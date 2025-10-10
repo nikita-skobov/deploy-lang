@@ -4,28 +4,36 @@ use tokio::process::Command;
 
 pub type ArgSet = serde_json::Map<String, serde_json::Value>;
 
-pub async fn create(
+pub fn transition_gerund(transition_type: &str) -> &str {
+    let len = transition_type.len();
+    transition_type.get(0..len-1).unwrap_or(transition_type)
+}
+
+pub async fn run_template(
     logger: &'static dyn Log,
     resource_name: &str,
     template_name: &str,
     mut transition: Transition,
+    transition_type: &str,
     input: serde_json::Value
 ) -> Result<serde_json::Value, String> {
-    log::info!(logger: logger, "creating '{}'", resource_name);
+    log::info!(logger: logger, "{}ing '{}'", transition_gerund(transition_type), resource_name);
     let mut out_val = serde_json::Value::Object(Default::default());
     // TODO: process directives...
     for (i, command) in transition.cli_commands.drain(..).enumerate() {
         let arg_set = create_arg_set(&input, &command.cmd.arg_transforms)
             .map_err(|e| format!(
-                "resource '{}' failed to create arg set from template '{}' create[{}]: {}",
+                "resource '{}' failed to create arg set from template '{}' {}[{}]: {}",
                 resource_name,
                 template_name,
+                transition_type,
                 i, e
             ))?;
         let val = run_command(arg_set, command.cmd).await
             .map_err(|e| format!(
-                "resource '{}' failed to run create[{}] command from template '{}': {}",
+                "resource '{}' failed to run {}[{}] command from template '{}': {}",
                 resource_name,
+                transition_type,
                 i,
                 template_name,
                 e

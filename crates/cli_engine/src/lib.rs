@@ -628,11 +628,12 @@ pub async fn transition_single(
     let TrWithTemplate { tr, template } = tr;
     match tr {
         TransitionableResource::Create { current_entry } => {
-            let output = run_template::create(
+            let output = run_template::run_template(
                 logger,
                 current_entry.resource_name.as_str(),
                 &template.template_name.s,
                 template.create,
+                "create",
                 current_input.clone(),
             ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
             Ok(ResourceInState {
