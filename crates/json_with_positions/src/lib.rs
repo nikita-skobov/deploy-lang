@@ -845,6 +845,34 @@ mod test {
     use super::*;
 
     #[test]
+    fn can_parse_arrays_of_json_path_queries() {
+        // simple case first:
+        let value = parse_json_value("[$.a, $.input.b]").unwrap();
+        assert_matches!(value, Value::Array { val, .. } => {
+            assert_eq!(val.len(), 2);
+            assert_matches!(&val[0], Value::JsonPath { val, .. } => {
+                assert_eq!(val.s, "$.a");
+            });
+            assert_matches!(&val[1], Value::JsonPath { val, .. } => {
+                assert_eq!(val.s, "$.input.b");
+            });
+        });
+        let value = parse_json_value("[$, $.something, $['abc'].x[\"e\"]]").unwrap();
+        assert_matches!(value, Value::Array { val, .. } => {
+            assert_eq!(val.len(), 3);
+            assert_matches!(&val[0], Value::JsonPath { val, .. } => {
+                assert_eq!(val.s, "$");
+            });
+            assert_matches!(&val[1], Value::JsonPath { val, .. } => {
+                assert_eq!(val.s, "$.something");
+            });
+            assert_matches!(&val[2], Value::JsonPath { val, .. } => {
+                assert_eq!(val.s, "$['abc'].x[\"e\"]");
+            });
+        });
+    }
+
+    #[test]
     fn can_parse_json_path_queries() {
         let cases = [
             "$.something",
