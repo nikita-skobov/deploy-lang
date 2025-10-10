@@ -468,12 +468,18 @@ pub fn parse_json_path_segment<'a, I>(
     // https://www.rfc-editor.org/rfc/rfc9535.pdf
     // after the root dollar sign, we can have either a child segment or descendant segment
     // if its not a dot or a [ then we can exit since its not part of the path segment:
-    if let Some(peeked) = char_iter.peek() {
+    let next_char = if let Some(peeked) = char_iter.peek() {
         if peeked.c != '.' && peeked.c != '[' {
             return Ok(None);
         }
-    }
-    let next_char = char_iter.next().ok_or("ran out of characters parsing json path")?;
+        // clone and consume from iterator
+        let nc = peeked.clone();
+        let _ = char_iter.next();
+        nc
+    } else {
+        return Ok(None);
+    };
+
     if next_char.c == '.' {
         segment.push(next_char.c);
         // check if the following char is a dot as well
@@ -845,6 +851,14 @@ mod test {
     use super::*;
 
     #[test]
+    fn can_parse_json_path_query_solo() {
+        let value = parse_json_value("$.input.zipfile").unwrap();
+        assert_matches!(value, Value::JsonPath { val, .. } => {
+            assert_eq!(val.s, "$.input.zipfile");
+        });
+    }
+
+    #[test]
     fn can_parse_arrays_of_json_path_queries() {
         // simple case first:
         let value = parse_json_value("[$.a, $.input.b]").unwrap();
@@ -919,8 +933,6 @@ mod test {
     #[test]
     fn can_parse_double_escape_a() {
         let document = r#"["\\a"]"#;
-        let v: serde_json::Value = serde_json::from_str(document).unwrap();
-        println!("{}", v[0].as_str().unwrap());
         let value = parse_json_value(document).unwrap();
         assert_matches!(value, Value::Array { mut val, .. } => {
             assert_matches!(val.remove(0), Value::String { val, .. } => {
@@ -963,7 +975,6 @@ mod test {
             assert_matches!(vals.remove(0).1, Value::Object { mut val, .. } => {
                 let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
                 assert_matches!(vals.remove(0).1, Value::Object { mut val, .. } => {
-                    println!("{:#?}", val);
                     let mut vals: Vec<(StringAtLine, Value)> = val.drain().collect();
                     vals.sort_by(|a, b| a.0.s.cmp(&b.0.s));
                     let next_val = vals.remove(0);
