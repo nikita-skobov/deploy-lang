@@ -118,7 +118,7 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         };
         // TODO: allow directives on top of subsections
         if line.s.starts_with("create") {
-            parse_lines_to_create_transition(&mut out, &line, &mut body_iter)?;
+            parse_lines_as_transition(&mut out, &line, &mut body_iter, "create")?;
         } else {
             let line_index = line.line;
             let diag = SpannedDiagnostic::new(
@@ -131,13 +131,14 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
     Ok(())
 }
 
-pub fn parse_lines_to_create_transition<'a>(
+pub fn parse_lines_as_transition<'a>(
     template_section: &mut TemplateSection,
     current_line: &StrAtLine<'a>,
     lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
+    transition_type: &str,
 ) -> Result<(), SpannedDiagnostic> {
-    // can only have 1 create subsection:
-    if template_section.create_was_set {
+    if transition_type == "create" && template_section.create_was_set {
+        // can only have 1 create subsection:
         let line_index = current_line.line;
         let diag = SpannedDiagnostic::new(format!("templates cannot have multiple create subsections"), line_index, 999);
         return Err(diag);
@@ -155,13 +156,24 @@ pub fn parse_lines_to_create_transition<'a>(
     while let Some(command) = parse_command(lines)? {
         commands.push(command);
     }
-    template_section.create = Transition {
-        cli_commands: commands,
-        ..Default::default()
-    };
-    template_section.create_was_set = true;
+    match transition_type {
+        "create" => {
+            template_section.create = Transition {
+                cli_commands: commands,
+                ..Default::default()
+            };
+            template_section.create_was_set = true;
+        }
+        "update" => {
+            todo!()
+        }
+        "delete" | _ => {
+            todo!()
+        }
+    }
     Ok(())
 }
+
 
 /// returns a string representing the whitespace sequence of the line prior to the first non-whitespace character
 fn get_prefix(s: &str) -> String {
