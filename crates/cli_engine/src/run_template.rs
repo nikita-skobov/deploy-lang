@@ -1,12 +1,27 @@
+use std::fmt::Display;
+
 use dcl_language::parse::template::{ArgTransform, CliCommand, Transition};
 use log::Log;
 use tokio::process::Command;
 
 pub type ArgSet = serde_json::Map<String, serde_json::Value>;
 
-pub fn transition_gerund(transition_type: &str) -> &str {
+struct Gerund<'a> {
+    pub verb: &'a str,
+}
+
+impl<'a> Display for Gerund<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.verb)?;
+        f.write_str("ing")
+    }
+}
+
+fn transition_gerund<'a>(transition_type: &'a str) -> Gerund<'a> {
     let len = transition_type.len();
-    transition_type.get(0..len-1).unwrap_or(transition_type)
+    Gerund {
+        verb: transition_type.get(0..len-1).unwrap_or(transition_type)
+    }
 }
 
 pub async fn run_template(
@@ -17,7 +32,7 @@ pub async fn run_template(
     transition_type: &str,
     input: serde_json::Value
 ) -> Result<serde_json::Value, String> {
-    log::info!(logger: logger, "{}ing '{}'", transition_gerund(transition_type), resource_name);
+    log::info!(logger: logger, "{} '{}'", transition_gerund(transition_type), resource_name);
     let mut out_val = serde_json::Value::Object(Default::default());
     // TODO: process directives...
     for (i, command) in transition.cli_commands.drain(..).enumerate() {
