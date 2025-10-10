@@ -4,6 +4,8 @@ use dcl_language::{parse::{resource::ResourceSection, template::TemplateSection,
 use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::State, Query}};
 use serde::{Deserialize, Serialize};
 
+use crate::run_template::run_template;
+
 pub mod run_template;
 
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -635,6 +637,7 @@ pub async fn transition_single(
                 template.create,
                 "create",
                 current_input.clone(),
+                None,
             ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
             Ok(ResourceInState {
                 resource_name: current_entry.resource_name.s,
@@ -644,7 +647,19 @@ pub async fn transition_single(
                 depends_on,
             })
         }
-        TransitionableResource::Update { state_entry, current_entry } => todo!(),
+        TransitionableResource::Update { state_entry, current_entry } => {
+            // state_entry.last_input
+            let output = run_template::run_template(
+                logger,
+                current_entry.resource_name.as_str(),
+                &template.template_name.s,
+                template.create,
+                "create",
+                current_input.clone(),
+                Some(state_entry.last_input),
+            ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
+            todo!()
+        }
         TransitionableResource::Delete { state_entry } => todo!(),
     }
 }

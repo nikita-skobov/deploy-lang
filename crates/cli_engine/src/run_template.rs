@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
-use dcl_language::parse::template::{ArgTransform, CliCommand, Transition};
+use dcl_language::parse::template::{ArgTransform, CliCommand, CliCommandWithDirectives, Directive, Transition};
+use jsonpath_rust::parser::model::JpQuery;
 use log::Log;
 use tokio::process::Command;
 
@@ -30,12 +31,20 @@ pub async fn run_template(
     template_name: &str,
     mut transition: Transition,
     transition_type: &str,
-    input: serde_json::Value
+    input: serde_json::Value,
+    last_input: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     log::info!(logger: logger, "{} '{}'", transition_gerund(transition_type), resource_name);
     let mut out_val = serde_json::Value::Object(Default::default());
     // TODO: process directives...
     for (i, command) in transition.cli_commands.drain(..).enumerate() {
+        // last input should only be set for update transitions.
+        // if its an update, we check if we should run this command:
+        if let Some(last_input) = &last_input {
+            if !should_run_update_cmd(&command.directives, last_input, &input)? {
+                continue;
+            }
+        }
         let arg_set = create_arg_set(&input, &command.cmd.arg_transforms)
             .map_err(|e| format!(
                 "resource '{}' failed to create arg set from template '{}' {}[{}]: {}",
@@ -59,6 +68,101 @@ pub async fn run_template(
         out_val = default_value_merge(out_val, val);
     }
     Ok(out_val)
+}
+
+pub fn should_run_update_cmd(
+    directives: &[Directive],
+    previous: &serde_json::Value,
+    current: &serde_json::Value,
+) -> Result<bool, String> {
+    // if there are no directives, return true => we can run the command
+    if directives.len() == 0 {
+        return Ok(true)
+    }
+    // if any directive passes, return true
+    // since they are ORed together
+    for directive in directives.iter() {
+        match directive {
+            Directive::Diff { query, .. } => {
+                if all_previous_current_differ(query, previous, current)? {
+                    // prev != current => all are different => diff check succeeds
+                    return Ok(true)
+                }
+            }
+            Directive::Same { query, .. } => {
+                if all_previous_current_match(query, previous, current)? {
+                    // prev == current => all are same => same check succeeds
+                    return Ok(true)
+                }
+            }
+            _ => {
+                // other directive types are not relevant to update
+            }
+        }
+    }
+    // none of the directives passed, this command should not run
+    Ok(false)
+}
+
+pub fn all_previous_current_differ(
+    queries: &[JpQuery],
+    previous: &serde_json::Value,
+    current: &serde_json::Value
+) -> Result<bool, String> {
+    // AND together the queries
+    // return true if NONE match
+    for q in queries.iter() {
+        if previous_matches_current(q, previous, current)? {
+            return Ok(false)
+        }
+    }
+    Ok(true)
+}
+
+pub fn all_previous_current_match(
+    queries: &[JpQuery],
+    previous: &serde_json::Value,
+    current: &serde_json::Value
+) -> Result<bool, String> {
+    // AND together the queries
+    // return true if ALL match
+    for q in queries.iter() {
+        if !previous_matches_current(q, previous, current)? {
+            return Ok(false)
+        }
+    }
+    Ok(true)
+}
+
+pub fn previous_matches_current(
+    query: &JpQuery,
+    previous: &serde_json::Value,
+    current: &serde_json::Value
+) -> Result<bool, String> {
+    let mut prev_val = jsonpath_rust::query::js_path_process(query, previous)
+        .map_err(|e| format!("failed to evaluate json path query '{}' for previous state entry {:?}. error: {:?}", query, previous, e))?;
+    let mut current_val = jsonpath_rust::query::js_path_process(query, current)
+        .map_err(|e| format!("failed to evaluate json path query '{}' for current entry {:?}. error: {:?}", query, current, e))?;
+    
+    let mut prev_iter = prev_val.drain(..);
+    let mut curr_iter = current_val.drain(..);
+    loop {
+        let prev = prev_iter.next();
+        let curr = curr_iter.next();
+        match (prev, curr) {
+            (None, None) => break,
+            (None, Some(_)) => return Ok(false),
+            (Some(_), None) => return Ok(false),
+            (Some(p), Some(c)) => {
+                if p.val() != c.val() {
+                    return Ok(false)
+                }
+            }
+        }
+    }
+
+    // if we got here all values matched
+    Ok(true)
 }
 
 pub fn default_value_merge(
@@ -179,4 +283,61 @@ pub fn create_arg_set(
     }
 
     Ok(arg_set)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn prev_match_curr(jpq: &str, prev: serde_json::Value, curr: serde_json::Value) -> bool {
+        let jpq = jsonpath_rust::parser::parse_json_path(jpq).expect("failed to parse json path query");
+        previous_matches_current(&jpq, &prev, &curr)
+            .expect("failed to query json paths")
+    }
+
+    #[test]
+    fn update_diff_works() {
+        assert_eq!(true,
+            prev_match_curr("$.input.somefield",
+                serde_json::json!({"input": {"somefield": "a"}}),
+                serde_json::json!({"input": {"somefield": "a"}}),
+            )
+        );
+
+        // different value
+        assert_eq!(false,
+            prev_match_curr("$.input.somefield",
+                serde_json::json!({"input": {"somefield": "a"}}),
+                serde_json::json!({"input": {"somefield": "b"}}),
+            )
+        );
+        // different type
+        assert_eq!(false,
+            prev_match_curr("$.input.somefield",
+                serde_json::json!({"input": {"somefield": false}}),
+                serde_json::json!({"input": {"somefield": "b"}}),
+            )
+        );
+
+        // entire object
+        assert_eq!(true,
+            prev_match_curr("$",
+                serde_json::json!({"input": {"somefield": "b"}}),
+                serde_json::json!({"input": {"somefield": "b"}}),
+            )
+        );
+        assert_eq!(false,
+            prev_match_curr("$",
+                serde_json::json!({"input": {"somefield": "b"}}),
+                serde_json::json!({"input": {"somefield": {"b": "b"}}}),
+            )
+        );
+    }
+
+    #[test]
+    fn diff_directive_checks_work_multiple_diff() {
+        // we say this command should only run
+        // if field A has changed AND field B has changed
+        
+    }
 }
