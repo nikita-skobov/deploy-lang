@@ -15,7 +15,7 @@ pub fn validate_resources(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic
 }
 
 pub fn resource_has_corresponding_template(resource: &ResourceSection, dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
-    if !dcl.templates.iter().any(|x| resource.template_name == x.template_name) {
+    if !dcl.templates.iter().any(|x| resource.template_name.s == x.template_name.s) {
         diagnostics.push(SpannedDiagnostic::from_str_at_line(
             &resource.template_name,
             format!(

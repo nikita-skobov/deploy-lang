@@ -1,10 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dcl_language::{parse::{resource::ResourceSection, template::TemplateSection, SpannedDiagnostic}, DclFile};
 use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::State, Query}};
 use serde::{Deserialize, Serialize};
-
-use crate::run_template::run_template;
 
 pub mod run_template;
 
@@ -340,6 +338,45 @@ pub fn get_all_transient_dependencies_map(trs: &[TrWithTemplate]) -> Result<Hash
     Ok(transient_dep_map)
 }
 
+/// returns a map of resource names to a Vec of resources that must be deleted prior to
+/// the key being deleted. eg:
+/// `{"A": [], "B": [A]}`
+/// implies A can be deleted now, and B must wait for A to be deleted before B is to be deleted
+pub fn get_delete_order_map(trs: &[TrWithTemplate]) -> Result<HashMap<String, Vec<String>>, String> {
+    // first collect a set of all resource names that are to be deleted:
+    let delete_resources_set: HashSet<_> = trs.iter().map(|tr| tr.tr.get_resource_name()).collect();
+    let mut out = HashMap::with_capacity(trs.len());
+    for tr in trs {
+        let mut immediate_deps = get_immediate_dependencies(tr)?;
+        // for the immediate deps of this resource, remove any that are not in
+        // the batch of resources to be deleted:
+        immediate_deps.retain(|d| delete_resources_set.contains(d.as_str()));
+        out.insert(tr.tr.get_resource_name().to_string(), immediate_deps);
+    }
+    // now that we have a dependency order map, invert it
+    // so go from A depends on B, B depends on nothing
+    // { A: [B], B: []}
+    // to B must wait for A to be deleted, A does not need to wait for anything to be deleted
+    // { A: [], B: [A]}
+    let mut inverted: HashMap<String, Vec<String>> = HashMap::with_capacity(delete_resources_set.len());
+    for key in out.keys() {
+        inverted.insert(key.to_string(), vec![]);
+    }
+    for (key, deps) in out.drain() {
+        for dep in deps {
+            if let Some(existing) = inverted.get_mut(&dep) {
+                existing.push(key.clone());
+                existing.sort();
+                existing.dedup();
+            } else {
+                inverted.insert(dep.clone(), vec![key.clone()]);
+            }
+        }
+    }
+
+    Ok(inverted)
+}
+
 pub fn collect_all_transient_deps<'a>(
     lookup: &str,
     visited: &mut Vec<&'a String>,
@@ -443,6 +480,7 @@ pub async fn perform_update(
     let create_or_updates = transitionable_resources;
     // process creates/updates first then deletes
     perform_update_batch(logger, &mut state, create_or_updates).await?;
+    perform_delete_batch(logger, deletes).await?;
     Ok(state)
 }
 
@@ -485,6 +523,43 @@ pub async fn perform_update_batch(
     Ok(())
 }
 
+pub async fn perform_delete_batch(
+    logger: &'static dyn log::Log,
+    mut batch: Vec<TrWithTemplate>,
+) -> Result<(), String> {
+    if batch.is_empty() { return Ok(()) }
+    // get an order map that says "this resource must wait for other resource(s) to be deleted first"
+    let delete_order_map = get_delete_order_map(&batch)?;
+    let mut already_deleted = HashSet::new();
+
+    let mut task_set = tokio::task::JoinSet::new();
+    // fire off async tasks for all trs that can be deleted now, remove them from the list
+    // so that they aren't processed multiple times
+    spawn_all_currently_deleteable(logger, &mut batch, &already_deleted, &delete_order_map, &mut task_set)?;
+    if task_set.is_empty() {
+        return Err(format!("error: unable to spawn any deleteable resource jobs"))
+    }
+    while let Some(next) = task_set.join_next().await {
+        let res = next.map_err(|e| format!("deployment task panicked: {:?}", e))?;
+        // TODO: should 1 resource failure stop all other resources? for now it will...
+        let res = res.map_err(|(resource_name, e)| {
+            log::error!(logger: logger, "resource '{}' failed to delete. error: {}", resource_name, e);
+            e
+        })?;
+        log::info!(logger: logger, "resource '{}' OK", res.resource_name);
+        // add it to the set of deleted resources. note deletes dont need to update the statefile
+        // since they've already been removed from state. and after deletion we dont add them back obviously
+        already_deleted.insert(res.resource_name);
+        // spawn everything thats now deleteable: the resource that just finished may have made it possible to spawn more
+        spawn_all_currently_deleteable(logger, &mut batch, &already_deleted, &delete_order_map, &mut task_set)?;
+    }
+    // if theres any remaining TRs in the batch, error out as the transition cannot be counted a success:
+    if !batch.is_empty() {
+        return Err(format!("{} resources were not deleted: {:?}", batch.len(), batch.iter().map(|x| x.tr.get_resource_name()).collect::<Vec<_>>()))
+    }
+    Ok(())
+}
+
 pub fn retain_mut_err<T, E>(v: &mut Vec<T>, mut f: impl FnMut(&mut T) -> Result<bool, E>) -> Result<(), E> {
     let mut error: Option<E> = None;
     v.retain_mut(|t| {
@@ -519,6 +594,33 @@ pub fn spawn_all_currently_transitionable(
                 .to_vec();
             task_set.spawn(async move {
                 transition_single(logger, tr, input, dependencies).await
+            });
+            return Ok(false)
+        }
+        Ok(true)
+    })
+}
+
+pub fn spawn_all_currently_deleteable(
+    logger: &'static dyn log::Log,
+    list: &mut Vec<TrWithTemplate>,
+    already_deleted: &HashSet<String>,
+    delete_order_map: &HashMap<String, Vec<String>>,
+    task_set: &mut tokio::task::JoinSet<Result<ResourceInState, (String, String)>>,
+) -> Result<(), String> {
+    retain_mut_err::<_, String>(list, |tr| {
+        // look up the list of resources it needs to wait for deletion:
+        let delete_first = delete_order_map.get(tr.tr.get_resource_name())
+            .ok_or_else(|| format!("resource '{}' is to be deleted but it doesnt exist in the delete_order map", tr.tr.get_resource_name()))?;
+        let can_be_deleted_now = delete_first.iter().all(|d| already_deleted.contains(d));
+        if can_be_deleted_now {
+            let tr = std::mem::take(tr);
+            let input = match &tr.tr {
+                TransitionableResource::Delete { state_entry } => state_entry.last_input.clone(),
+                _ => return Err(format!("resource '{}' was in delete batch but its not a delete TR", tr.tr.get_resource_name())),
+            };
+            task_set.spawn(async move {
+                transition_single(logger, tr, input, vec![]).await
             });
             return Ok(false)
         }
@@ -667,7 +769,28 @@ pub async fn transition_single(
                 depends_on,
             })
         }
-        TransitionableResource::Delete { state_entry } => todo!(),
+        TransitionableResource::Delete { state_entry } => {
+            let _output = run_template::run_template(
+                logger,
+                &state_entry.resource_name,
+                &template.template_name.s,
+                template.delete.ok_or_else(||
+                    // by the time we get here, all deletes should have been verified to have
+                    // a delete template. so not going to worry about a detailed error message here
+                    (state_entry.resource_name.clone(), "delete missing template".to_string()))?,
+                "delete",
+                current_input.clone(),
+                Some(state_entry.last_input),
+            ).await.map_err(|e| (state_entry.resource_name.clone(), e))?;
+            // deletes can drop their output, input, and dependency information, we're not saving it to state.
+            Ok(ResourceInState {
+                resource_name: state_entry.resource_name,
+                template_name: template.template_name.s,
+                last_input: serde_json::Value::Null,
+                output: serde_json::Value::Null,
+                depends_on: vec![],
+            })
+        }
     }
 }
 
@@ -1742,5 +1865,144 @@ template xyz
         dcl.templates.push(template);
         let error = perform_update(logger, dcl, state).await.expect_err("it should error");
         assert!(error.starts_with(r#"resource 'A' is to be deleted but template 'template' does not define any delete commands"#), "{}", error);
+    }
+
+    macro_rules! delete_tr {
+        ($name: literal; $depends_on: expr) => {
+            TrWithTemplate {
+                tr: TransitionableResource::Delete { state_entry: ResourceInState {
+                    resource_name: $name.to_string(),
+                    depends_on: $depends_on.into_iter().map(|x: &str| x.to_string()).collect(),
+                    ..Default::default()
+                }},
+                template: TemplateSection::default(),
+            }
+        };
+    }
+
+    #[test]
+    fn delete_order_map_works() {
+        let a = delete_tr!("A"; []);
+        let b = delete_tr!("B"; ["A"]);
+        let batch = vec![a, b];
+        let order_map = get_delete_order_map(&batch).expect("it should not error");
+        let order_map_val = serde_json::to_value(order_map).unwrap();
+        assert_eq!(order_map_val, serde_json::json!({"A": ["B"], "B": []}));
+    }
+
+    #[test]
+    fn delete_order_map_works_transient() {
+        // a depends on B, B depends on C, C depends on nothing.
+        // if all are to be deleted, then the order should be A, B, C
+        // and the order map would be:
+        // A: []
+        // B: [A]
+        // C: [B]
+        // the delete order map doesnt need to handle transient dependencies
+        let a = delete_tr!("A"; ["B"]);
+        let b = delete_tr!("B"; ["C"]);
+        let c = delete_tr!("C"; []);
+        let batch = vec![a, b, c];
+        let order_map = get_delete_order_map(&batch).expect("it should not error");
+        let order_map_val = serde_json::to_value(order_map).unwrap();
+        assert_eq!(order_map_val, serde_json::json!({"A": [], "B": ["A"], "C": ["B"]}));
+    }
+
+    #[tokio::test]
+    async fn can_delete_simple() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  delete
+    echo deleted
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause a delete
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 0);
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["deleting 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn can_delete_simple_ordered() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  delete
+    echo deleted
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause a delete
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            ..Default::default()
+        });
+        // resourceB has been deployed before, and it depended on resourceA
+        // resourceB should be deleted first
+        state.resources.insert("resourceB".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceB".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            depends_on: vec!["resourceA".to_string()],
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 0);
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["deleting 'resourceB'", "resource 'resourceB' OK", "deleting 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn deletes_happen_after_create_updates() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  delete
+    echo deleted
+
+resource xyz(new)
+  {"a":"a"}
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, and previously depended on "new"
+        // but new is not being deleted, so resourceA shouldnt wait for "new" to be deleted
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            depends_on: vec!["new".to_string()],
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        assert!(out_state.resources.contains_key("new"));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec![
+            "creating 'new'",
+            "resource 'new' OK",
+            "deleting 'resourceA'",
+            "resource 'resourceA' OK"
+        ]);
     }
 }

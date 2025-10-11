@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use dcl_language::parse::template::{ArgTransform, CliCommand, CliCommandWithDirectives, Directive, Transition};
+use dcl_language::parse::template::{ArgTransform, CliCommand, Directive, Transition};
 use jsonpath_rust::parser::model::JpQuery;
 use log::Log;
 use tokio::process::Command;
