@@ -438,14 +438,11 @@ pub async fn perform_update(
     let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
     // ensure every resource to be transitioned *can* be transitioned before starting any tasks:
     verify_transitions(&transitionable_resources)?;
-    // get map of names of resources to a flat list of all transient dependencies of that resource
-    let dependency_map = get_all_transient_dependencies_map(&transitionable_resources)?;
     // split out deletes
     let deletes: Vec<TrWithTemplate> = transitionable_resources.extract_if(.., |tr| tr.tr.is_delete()).collect();
     let create_or_updates = transitionable_resources;
     // process creates/updates first then deletes
-    perform_update_batch(logger, &mut state, create_or_updates, &dependency_map).await?;
-    perform_update_batch(logger, &mut state, deletes, &dependency_map).await?;
+    perform_update_batch(logger, &mut state, create_or_updates).await?;
     Ok(state)
 }
 
@@ -453,8 +450,10 @@ pub async fn perform_update_batch(
     logger: &'static dyn log::Log,
     state: &mut StateFile,
     mut batch: Vec<TrWithTemplate>,
-    dep_map: &HashMap<String, Vec<String>>,
 ) -> Result<(), String> {
+    // get map of names of resources to a flat list of all transient dependencies of that resource
+    let dependency_map = get_all_transient_dependencies_map(&batch)?;
+    let dep_map = &dependency_map;
     if batch.is_empty() { return Ok(()) }
 
     let mut task_set = tokio::task::JoinSet::new();
@@ -1745,15 +1744,3 @@ template xyz
         assert!(error.starts_with(r#"resource 'A' is to be deleted but template 'template' does not define any delete commands"#), "{}", error);
     }
 }
-
-
-/*
-
-
-delete cases:
-1. you delete a resource that does not depend on anything, nor anything depends on it. can be handled easily
-2. you delete a resource that depends on another resource 'X'. X still exists. your resource can be deleted easily.
-3. you delete a resource that depends on another resource 'X'. X is to be deleted in this update. must delete your resource first, before deleting X.
-
-
-*/
