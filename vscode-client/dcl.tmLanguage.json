@@ -21,6 +21,10 @@
       ]
     },
     {
+      "name": "comment.line.number-sign.dcl",
+      "match": "#.*$"
+    },
+    {
       "match": "^(\\w+)\\s+(\\w+)\\((.*)\\)",
       "captures": {
         "1": { "name": "keyword.control.dcl" },
