@@ -799,7 +799,7 @@ pub async fn transition_single(
 
 #[cfg(test)]
 mod test {
-    use std::sync::Mutex;
+    use std::{path::PathBuf, sync::Mutex};
 
     use super::*;
     use assert_matches::assert_matches;
@@ -1681,8 +1681,8 @@ template xyz
         let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
         // neither a nor b changed, so none of the echo commands ran in the update
-        // and therefore an empty object was produced
-        assert_eq!(a_resource.output, serde_json::json!({}));
+        // and therefore a null value should be the output
+        assert_eq!(a_resource.output, serde_json::json!(null));
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
     }
@@ -2088,4 +2088,70 @@ resource xyz(resourceA)
         assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
     }
 
+    #[tokio::test]
+    async fn accum_starts_as_last_output() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  update
+    echo
+      abc $.accum
+
+resource xyz(resourceA)
+    {}
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            output: serde_json::json!({"someval": "somevalue"}),
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the update runs a command
+        // that references accum. accum's initial state should be the same as last output
+        assert_eq!(resource_a.output.as_str().unwrap(), "--abc {\"someval\":\"somevalue\"}\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn deletes_can_reference_last_output() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  delete
+    rm
+      force $.output.filename
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause a delete
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            output: serde_json::json!({"filename": "blah.txt"}),
+            ..Default::default()
+        });
+        std::fs::write("blah.txt", "").unwrap();
+        let file = PathBuf::from("blah.txt");
+        assert!(file.exists());
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert!(!file.exists());
+        assert_eq!(out_state.resources.len(), 0);
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["deleting 'resourceA'", "resource 'resourceA' OK"]);
+    }
 }

@@ -43,10 +43,12 @@ pub struct CommandState {
 
 impl CommandState {
     pub fn new(input: serde_json::Value, last_output: Option<serde_json::Value>) -> Self {
+        let output = last_output.unwrap_or(serde_json::Value::Null);
         Self {
             input,
-            output: last_output.unwrap_or(serde_json::Value::Null),
-            accum: serde_json::Value::Object(Default::default())
+            output: output.clone(),
+            // accumulator starts as the same as last output
+            accum: output,
         }
     }
 
@@ -564,7 +566,7 @@ mod test {
         let mut cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
         let jpq = jsonpath_rust::parser::parse_json_path("$.accum").unwrap();
         let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
-        assert_eq!(evaluated, serde_json::json!({}));
+        assert_eq!(evaluated, serde_json::json!(null));
         let jpq = jsonpath_rust::parser::parse_json_path("$.accum.aout").unwrap();
         let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
         assert_eq!(evaluated, serde_json::json!([]));
