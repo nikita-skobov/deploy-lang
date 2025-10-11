@@ -648,17 +648,25 @@ pub async fn transition_single(
             })
         }
         TransitionableResource::Update { state_entry, current_entry } => {
-            // state_entry.last_input
             let output = run_template::run_template(
                 logger,
                 current_entry.resource_name.as_str(),
                 &template.template_name.s,
-                template.create,
-                "create",
+                template.update.ok_or_else(||
+                    // by the time we get here, all updates should have been verified to have
+                    // an update template. so not going to worry about a detailed error message here
+                    (current_entry.resource_name.s.clone(), "update missing template".to_string()))?,
+                "update",
                 current_input.clone(),
                 Some(state_entry.last_input),
             ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
-            todo!()
+            Ok(ResourceInState {
+                resource_name: current_entry.resource_name.s,
+                template_name: template.template_name.s,
+                last_input: current_input,
+                output,
+                depends_on,
+            })
         }
         TransitionableResource::Delete { state_entry } => todo!(),
     }
@@ -1465,6 +1473,195 @@ mod test {
         assert_eq!(b_resource.depends_on, vec!["A"]);
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK", "resource 'B' input has not changed since last transition. returning noop", "resource 'B' OK"]);
+    }
+
+    #[tokio::test]
+    async fn perform_update_resources_can_do_updates() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = DclFile::default();
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "A".into(),
+            template_name: "template".into(),
+            input: json_with_positions::parse_json_value(r#"{"this": "will be updated"}"#).unwrap(),
+        });
+        // B has been deployed before, it should cause an update
+        dcl.resources.push(ResourceSection {
+            resource_name: "B".into(),
+            template_name: "template".into(),
+            input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+        });
+        state.resources.insert("B".to_string(), ResourceInState {
+            template_name: "template".to_string(),
+            resource_name: "B".to_string(),
+            last_input: serde_json::json!({ "resourceA": "--this will be echoed\n" }),
+            ..Default::default()
+        });
+        let mut template = TemplateSection::default();
+        template.template_name.s = "template".to_string();
+        let mut cli_cmd = CliCommand::default();
+        cli_cmd.command.s = "echo".to_string();
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.clone(), ..Default::default() });
+        template.update = Some(Default::default());
+        if let Some(upd) = &mut template.update {
+            upd.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
+        }
+        dcl.templates.push(template);
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 2);
+        let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        assert_eq!(a_resource.last_input, serde_json::json!({"this": "will be updated"}));
+        assert_eq!(a_resource.template_name, "template");
+        assert_eq!(a_resource.output.as_str().unwrap(), "--this will be updated\n");
+        let b_resource = out_state.resources.remove("B").expect("it should have an output resource 'B'");
+        assert_eq!(b_resource.depends_on, vec!["A"]);
+        assert_eq!(b_resource.output.as_str().unwrap(), "--resourceA --this will be updated\n\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'A'", "resource 'A' OK", "updating 'B'", "resource 'B' OK"]);
+    }
+
+    #[tokio::test]
+    async fn perform_update_resources_can_do_updates_conditional_commands_none() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let mut dcl = dcl_language::parse_and_validate(r#"
+template xyz
+  create
+    echo hello
+  update
+    @diff $.a
+    echo fielda changed
+    @diff $.b
+    echo fieldb changed
+"#).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "resourceA".into(),
+            template_name: "xyz".into(),
+            input: json_with_positions::parse_json_value(r#"{"a":"a","b":"b", "c":"c"}"#).unwrap(),
+        });
+        // resourceA has been deployed before, it should cause an update
+        // resourceA's last input was unchanged
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            ..Default::default()
+        });
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        // neither a nor b changed, so none of the echo commands ran in the update
+        // and therefore an empty object was produced
+        assert_eq!(a_resource.output, serde_json::json!({}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn perform_update_resources_can_do_updates_conditional_commands_only_one() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  update
+    @diff $.a
+    echo { "a": "achanged" }
+    @diff $.b
+    echo { "b": "bchanged" }
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "resourceA".into(),
+            template_name: "xyz".into(),
+            input: json_with_positions::parse_json_value(r#"{"a":"achanged","b":"b"}"#).unwrap(),
+        });
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            ..Default::default()
+        });
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        // only a changed, so we should only see echo for a
+        assert_eq!(a_resource.output, serde_json::json!({"a": "achanged"}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+
+        // run the same test but this time bchanged:
+        let logger = VecLogger::leaked();
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "resourceA".into(),
+            template_name: "xyz".into(),
+            input: json_with_positions::parse_json_value(r#"{"a":"a","b":"bchanged"}"#).unwrap(),
+        });
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            ..Default::default()
+        });
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        // only a changed, so we should only see echo for b
+        assert_eq!(a_resource.output, serde_json::json!({"b": "bchanged"}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn perform_update_resources_can_do_updates_conditional_commands_both() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  update
+    @diff $.a
+    echo { "a": "achanged" }
+    @diff $.b
+    echo { "b": "bchanged" }
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        dcl.resources.push(ResourceSection {
+            resource_name: "resourceA".into(),
+            template_name: "xyz".into(),
+            input: json_with_positions::parse_json_value(r#"{"a":"achanged","b":"bchanged"}"#).unwrap(),
+        });
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            ..Default::default()
+        });
+        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
+        assert_eq!(a_resource.depends_on.len(), 0);
+        // both a and b changed, so both the echoes should run
+        // and the outputs should be merged:
+        assert_eq!(a_resource.output, serde_json::json!({"a": "achanged", "b": "bchanged"}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
     }
 
     #[tokio::test]
