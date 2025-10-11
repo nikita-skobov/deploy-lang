@@ -2100,6 +2100,93 @@ resource xyz(resourceA)
     }
 
     #[tokio::test]
+    async fn templates_can_add_fields_to_accumulator() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    # adds "1" to the accumulator at PolicyVersion.VersionId
+    @accum [$.accum.PolicyVersion.DefaultVersionId, $.PolicyVersion.VersionId]
+    echo { "PolicyVersion" : { "DefaultVersionId": "1" } }
+
+resource xyz(resourceA)
+  { "thing": "hello" }
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the output of a should be what the echo outputted
+        // but also with an extra field that was added via the @accum directive
+        assert_eq!(resource_a.output, serde_json::json!({"PolicyVersion": { "VersionId": "1", "DefaultVersionId": "1"}}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn templates_can_add_fields_to_accumulator_from_input() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    # adds "hello" to the accumulator at PolicyVersion.VersionId
+    @accum [$.input.thing, $.PolicyVersion.VersionId]
+    echo { "PolicyVersion" : { } }
+
+resource xyz(resourceA)
+  { "thing": "hello" }
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the output of a should be what the echo outputted
+        // but also with an extra field that was added via the @accum directive
+        assert_eq!(resource_a.output, serde_json::json!({"PolicyVersion": { "VersionId": "hello" }}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn templates_can_add_fields_to_accumulator_from_output() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hi
+  update
+    @accum [$.output.someval, $.PolicyVersion.VersionId]
+    echo { "PolicyVersion" : { } }
+
+resource xyz(resourceA)
+  { "thing": "hello" }
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "thing": "b" }),
+            output: serde_json::json!({ "someval": "somevalue" }),
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the output of a should be what the echo outputted
+        // but also with an extra field that was added via the @accum directive
+        assert_eq!(resource_a.output, serde_json::json!({ "someval": "somevalue", "PolicyVersion": { "VersionId": "somevalue" }}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
     async fn output_during_update_unchanged() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);

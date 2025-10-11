@@ -1,8 +1,9 @@
 use std::fmt::Display;
 
 use dcl_language::parse::template::{ArgTransform, CliCommand, Directive, Transition};
-use jsonpath_rust::parser::model::JpQuery;
+use jsonpath_rust::{parser::model::{JpQuery, Segment}};
 use log::Log;
+use serde_json::Map;
 use tokio::process::Command;
 
 pub type ArgSet = serde_json::Map<String, serde_json::Value>;
@@ -90,6 +91,88 @@ impl CommandState {
         };
         Ok(val)
     }
+
+    pub fn insert_accum(&mut self, name: &str, src_path: &JpQuery, accum_path: &JpQuery) -> Result<(), String> {
+        // first, get the value referenced by src_path:
+        let value = self.evaluate_arg_transform(name, src_path)?;
+        // then recursively access values from the accum path segments,
+        // creating empty objects if it references a path that doesnt exist yet
+        let mut segments = accum_path.segments.clone();
+        set_value_recursively(&mut self.accum, value, &mut segments)
+    }
+}
+
+pub fn set_value_recursively(
+    current_val_ref: &mut serde_json::Value,
+    set_val: serde_json::Value,
+    remaining_selectors: &mut Vec<Segment>,
+) -> Result<(), String> {
+    if remaining_selectors.is_empty() {
+        *current_val_ref = set_val;
+        return Ok(());
+    }
+    let accessor = remaining_selectors.remove(0);
+    match accessor {
+        jsonpath_rust::parser::model::Segment::Selector(selector) => {
+            match selector {
+                jsonpath_rust::parser::model::Selector::Name(key) => set_value_at_key(key, current_val_ref, set_val, remaining_selectors),
+                jsonpath_rust::parser::model::Selector::Index(i) => {
+                    if i < 0 {
+                        return Err(format!("invalid accum_path selector index '{}' indices must be positive", i))
+                    }
+                    set_value_at_index(i as usize, current_val_ref, set_val, remaining_selectors)
+                },
+                x => return Err(format!("accum_path selector can only be a name or an index, instead found '{}'", x)),
+            }
+        }
+        x => return Err(format!("accum_path can only contain selectors, instead found '{}'", x)),
+    }
+}
+
+pub fn set_value_at_key(
+    key: String,
+    current_val_ref: &mut serde_json::Value,
+    set_val: serde_json::Value,
+    remaining_selectors: &mut Vec<Segment>,   
+) -> Result<(), String> {
+    // if there's nothing at key, create it as an empty object
+    if current_val_ref.get(&key).is_none() {
+        if let Some(obj) = current_val_ref.as_object_mut() {
+            obj.insert(key.clone(), serde_json::Value::Object(Map::new()));
+        } else {
+            return Err(format!("tried to access accumulator at $ ... '{}'. could not set that key as the value is not an object {:?}", key, current_val_ref))
+        }
+    }
+
+    if let Some(obj) = current_val_ref.get_mut(&key) {
+        set_value_recursively(obj, set_val, remaining_selectors)
+    } else {
+        return Err(format!("failed to access accumulator at $ ... '{}'", key))
+    }    
+}
+
+pub fn set_value_at_index(
+    index: usize,
+    current_val_ref: &mut serde_json::Value,
+    set_val: serde_json::Value,
+    remaining_selectors: &mut Vec<Segment>,   
+) -> Result<(), String> {
+    // if there's nothing at key, create it as an empty object
+    if current_val_ref.get(index).is_none() {
+        if let Some(arr) = current_val_ref.as_array_mut() {
+            while arr.len() <= index {
+                arr.push(serde_json::Value::Object(Map::new()));
+            }
+        } else {
+            return Err(format!("tried to access accumulator at $ ... '[{}]'. could not set that index as the value is not an array {:?}", index, current_val_ref))
+        }
+    }
+
+    if let Some(obj) = current_val_ref.get_mut(index) {
+        set_value_recursively(obj, set_val, remaining_selectors)
+    } else {
+        return Err(format!("failed to access accumulator at $ ... '[{}]'", index))
+    }    
 }
 
 pub async fn run_template(
@@ -137,6 +220,13 @@ pub async fn run_template(
         if !should_drop_output {
             command_state.accum = default_value_merge(command_state.accum, val);
         }
+
+        // after merge, check for any accumulator directives
+        for d in command.directives.iter() {
+            if let Directive::Accum { src_path, accum_path, .. } = d {
+                command_state.insert_accum(resource_name, src_path, accum_path)?;
+            }
+        }
     }
     Ok(command_state.accum)
 }
@@ -150,17 +240,20 @@ pub fn should_run_update_cmd(
     if directives.len() == 0 {
         return Ok(true)
     }
+    let mut has_diff_or_same_directive = false;
     // if any directive passes, return true
     // since they are ORed together
     for directive in directives.iter() {
         match directive {
             Directive::Diff { query, .. } => {
+                has_diff_or_same_directive = true;
                 if all_previous_current_differ(query, previous, current)? {
                     // prev != current => all are different => diff check succeeds
                     return Ok(true)
                 }
             }
             Directive::Same { query, .. } => {
+                has_diff_or_same_directive = true;
                 if all_previous_current_match(query, previous, current)? {
                     // prev == current => all are same => same check succeeds
                     return Ok(true)
@@ -170,6 +263,10 @@ pub fn should_run_update_cmd(
                 // other directive types are not relevant to update
             }
         }
+    }
+    // if there were directives but none were diff/same directives, then we can update:
+    if !has_diff_or_same_directive {
+        return Ok(true);
     }
     // none of the directives passed, this command should not run
     Ok(false)
@@ -418,6 +515,56 @@ mod test {
     }
 
     #[test]
+    fn can_insert_into_accumulator() {
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), Some(serde_json::json!({"a": "a"})));
+        let src_path = jsonpath_rust::parser::parse_json_path("$.input.inputa").unwrap();
+        let accum_path = jsonpath_rust::parser::parse_json_path("$.b").unwrap();
+        cs.insert_accum("a", &src_path, &accum_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"a": "a", "b": "inputa"}));
+    }
+
+    #[test]
+    fn can_insert_into_accumulator_fields_that_dont_exist() {
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), Some(serde_json::json!({})));
+        let src_path = jsonpath_rust::parser::parse_json_path("$.input.inputa").unwrap();
+        let accum_path = jsonpath_rust::parser::parse_json_path("$.this.is.entirely.new").unwrap();
+        cs.insert_accum("a", &src_path, &accum_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"this": {"is": {"entirely": {"new": "inputa"}}}}));
+    }
+
+    #[test]
+    fn cannot_change_accumulator_field_type() {
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), Some(serde_json::json!({"this": "is already a string"})));
+        let src_path = jsonpath_rust::parser::parse_json_path("$.input.inputa").unwrap();
+        let accum_path = jsonpath_rust::parser::parse_json_path("$.this.is.entirely.new").unwrap();
+        let err = cs.insert_accum("a", &src_path, &accum_path).expect_err("it should err");
+        assert_eq!(err, "tried to access accumulator at $ ... 'is'. could not set that key as the value is not an object String(\"is already a string\")");
+    }
+
+    #[test]
+    fn can_insert_into_accumulator_fields_that_do_exist() {
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), Some(serde_json::json!({"this": "should be replaced"})));
+        let src_path = jsonpath_rust::parser::parse_json_path("$.input.inputa").unwrap();
+        let accum_path = jsonpath_rust::parser::parse_json_path("$.this").unwrap();
+        cs.insert_accum("a", &src_path, &accum_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"this": "inputa"}));
+    }
+
+    #[test]
+    fn can_insert_into_accumulator_fields_via_index() {
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), Some(serde_json::json!({"this": ["will grow"]})));
+        let src_path = jsonpath_rust::parser::parse_json_path("$.input.inputa").unwrap();
+        let accum_path = jsonpath_rust::parser::parse_json_path("$.this[3]").unwrap();
+        cs.insert_accum("a", &src_path, &accum_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"this": ["will grow", {}, {}, "inputa"]}));
+
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), Some(serde_json::json!({"this": ["will grow"]})));
+        let accum_path = jsonpath_rust::parser::parse_json_path("$.this[3].nested").unwrap();
+        cs.insert_accum("a", &src_path, &accum_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"this": ["will grow", {}, {}, {"nested": "inputa"}]}));
+    }
+
+    #[test]
     fn should_run_update_cmd_works_simple_diff() {
         // a must be different for it to run the update command
         let directives = vec![
@@ -467,6 +614,18 @@ mod test {
         // entirely different type: it should not run
         let current = serde_json::json!(null);
         assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+    }
+
+    #[test]
+    fn should_run_update_cmd_works_without_diff_directives() {
+        // the only directive is a drop output directive, so should_run_update_cmd
+        // should not be affected by this directive. it should return true
+        let directives = vec![
+            Directive::DropOutput { kw: Default::default() }
+        ];
+        let previous = serde_json::json!({"a":"a", "b": "b"});
+        let current = serde_json::json!({"a":"a", "b": "b"});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
     }
 
     #[test]

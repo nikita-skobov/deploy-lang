@@ -119,6 +119,20 @@ pub enum Directive {
     /// ```
     DropOutput { kw: StringAtLine },
 
+
+    /// insert a value into the accumulator after this command runs. the accum_path can leave out the $.accum since it's implied
+    /// the value is going into the accumulator. the src_path can be a json path starting with $.input $.name $.accum or $.output.
+    /// the syntax is a json array with 2 values. the first is the src_path of where to read from
+    /// and the 2nd is the accum_path which is where the value will be inserted to
+    /// eg
+    /// ```text
+    /// @accum [$.accum.somefield, $.nested.fieldvalue]
+    /// ```
+    /// the above example would run the command, merge into the accumulator,
+    /// then after it merges, it reads the value of the accumulator "somefield"
+    /// and it inserts that value again into the accumulator but at a different path "nested.fieldvalue"
+    Accum { kw: StringAtLine, src_path: jsonpath_rust::parser::model::JpQuery, accum_path: jsonpath_rust::parser::model::JpQuery },
+
     // TODO: support a diff same directive that ands together same and diff conditions
     // as otherwise there's no way to support running a command with multiple same/diff conditions
     // anded together. at the root level they are ORed together
@@ -274,6 +288,33 @@ pub fn parse_directive<'a>(
         }
         "dropoutput" => {
             Ok(Directive::DropOutput { kw: kw.to_owned() })
+        }
+        "accum" => {
+            let val = json_with_positions::parse_json_value(rest.s)
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse accum directive as array of two json paths: {:?}", e)))?;
+            let mut array = match val {
+                json_with_positions::Value::Array { val, .. } => val,
+                x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("accum directive must be followed by json array of two json paths. instead found {:?}", x)))
+            };
+            let second = array.pop();
+            let first = array.pop();
+            let (first, second) = match (first, second) {
+                (Some(f), Some(s)) => (f, s),
+                _ => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("accum directive must be followed by a json array of two json paths")))
+            };
+            let first_path_str = match first {
+                json_with_positions::Value::JsonPath { val, .. } => val,
+                x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("first accum directive value must be a json path, instead found '{:?}'", x))),
+            };
+            let second_path_str = match second {
+                json_with_positions::Value::JsonPath { val, .. } => val,
+                x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("second accum directive value must be a json path, instead found '{:?}'", x))),
+            };
+            let src_path = jsonpath_rust::parser::parse_json_path(first_path_str.as_str())
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", first_path_str.s, e)))?;
+            let accum_path = jsonpath_rust::parser::parse_json_path(second_path_str.as_str())
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", second_path_str.s, e)))?;
+            Ok(Directive::Accum { kw: kw.to_owned(), src_path, accum_path })
         }
         unknown_kw => {
             Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
@@ -512,6 +553,29 @@ template something
     }
 
     #[test]
+    fn can_parse_accum_directive() {
+        let document = r#"
+template something
+  create
+    @accum [$.input.xyz, $.some.accum.value]
+    echo
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates.len(), 1);
+        assert_eq!(dcl.templates[0].create.cli_commands.len(), 1);
+        assert_eq!(dcl.templates[0].create.cli_commands[0].directives.len(), 1);
+        assert_matches!(&dcl.templates[0].create.cli_commands[0].directives[0], Directive::Accum { kw, src_path, accum_path } => {
+            assert_eq!(kw.s, "accum");
+            assert_eq!(kw.line, 3);
+            assert_eq!(kw.col, 5);
+            assert_eq!(src_path.to_string(), "$inputxyz");
+            assert_eq!(accum_path.to_string(), "$someaccumvalue");
+        });
+    }
+
+    #[test]
     fn can_parse_with_comments() {
         let document = r#"
 template xyz
@@ -725,7 +789,7 @@ template aws_iam_policy
       ... $.input
   update
     # adds the value of PolicyVersion.VersionId to the accumulator
-    @after add-output $.Policy.DefaultVersionId $.accum.PolicyVersion.VersionId
+    @accum [$.Policy.DefaultVersionId, $.accum.PolicyVersion.VersionId]
     aws iam create-policy-version --set-as-default
       policy-arn $.output.Policy.Arn
       policy-document $.input.policy-document
