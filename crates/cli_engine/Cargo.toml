@@ -7,7 +7,7 @@ edition.workspace = true
 [dependencies]
 hex = "0.4.3"
 hmac-sha256 = "1.1.12"
-tokio = { version = "1.46.1", features = ["full"]}
+tokio = { workspace = true }
 dcl_language = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

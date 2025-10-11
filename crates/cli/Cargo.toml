@@ -7,3 +7,6 @@ edition.workspace = true
 [dependencies]
 dcl_language = { workspace = true }
 cli_engine = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+simple_logger = { version = "5.0.0", default-features = false }

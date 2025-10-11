@@ -17,13 +17,20 @@ pub struct StateFile {
     pub resources: HashMap<String, ResourceInState>,
 }
 
+pub fn save_state(state_path: &str, state: &StateFile) -> Result<(), String> {
+    let serialized = serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize state to json: {:?}", e))?;
+    std::fs::write(state_path, serialized)
+        .map_err(|e| format!("failed to save state back to file '{}': {:?}", state_path, e))
+}
+
 // TODO: need tp update DclFile definitions to preserve section line positions.
 // current reporting all errors on line 0 :/
 /// loads the state file and parses as a json object. if the state file doesnt exist, it will be
 /// created, and treated as an empty {} object
-pub fn load_state(dcl: &DclFile) -> Result<StateFile, SpannedDiagnostic> {
+pub fn load_state(dcl: &DclFile) -> Result<(StateFile, String), SpannedDiagnostic> {
     let state = dcl.state.as_ref().ok_or("no state file provided")
         .map_err(|e| SpannedDiagnostic::new(e, 0, 999))?;
+    let state_file = state.file.clone();
     let file = match std::fs::OpenOptions::new().read(true).open(&state.file) {
         Ok(o) => o,
         Err(e) => match e.kind() {
@@ -38,7 +45,7 @@ pub fn load_state(dcl: &DclFile) -> Result<StateFile, SpannedDiagnostic> {
                         format!("Failed to create empty state file '{}': {:?}", state.file, e),
                         0, 999)
                     )?;
-                return Ok(default_statefile);
+                return Ok((default_statefile, state_file));
             },
             e => {
                 return Err(SpannedDiagnostic::new(
@@ -52,7 +59,7 @@ pub fn load_state(dcl: &DclFile) -> Result<StateFile, SpannedDiagnostic> {
     let out: StateFile = serde_json::from_reader(buf)
         .map_err(|e| format!("Failed to read state file '{}' as json: {:?}", state.file, e))
         .map_err(|e| SpannedDiagnostic::new(e, 0, 999))?;
-    Ok(out)
+    Ok((out, state_file))
 }
 
 /// represents a resource that has successfully been created/updated in a state file
