@@ -25,6 +25,71 @@ fn transition_gerund<'a>(transition_type: &'a str) -> Gerund<'a> {
     }
 }
 
+/// an ephemeral object to track state across command invocations
+pub struct CommandState {
+    /// represents the input as-is when the transition started.
+    /// this value never changes across all commands
+    pub input: serde_json::Value,
+    /// represents the last output as-is from when the transition started.
+    /// this value never changes during the course of a transition. its purpose is
+    /// to hold the value of the resource's last output from the last time it ran.
+    /// for create transitions this will be set as null
+    pub output: serde_json::Value,
+    /// represents the accumulated output across commands. after each command runs, its
+    /// output is merged into this object, and after all commands run, the accumulator
+    /// gets returned as the output for this transition.
+    pub accum: serde_json::Value,
+}
+
+impl CommandState {
+    pub fn new(input: serde_json::Value, last_output: Option<serde_json::Value>) -> Self {
+        Self {
+            input,
+            output: last_output.unwrap_or(serde_json::Value::Null),
+            accum: serde_json::Value::Object(Default::default())
+        }
+    }
+
+    pub fn evaluate_arg_transform(&self, name: &str, jpq: &JpQuery) -> Result<serde_json::Value, String> {
+        // json path queries in arg transforms must start with either:
+        // - $.input
+        // - $.output
+        // - $.accum
+        // - $.name
+        let mut cloned_segments = jpq.segments.clone();
+        if cloned_segments.len() == 0 {
+            return Err(format!("arg transform json path query for resource '{}' must have at least 1 segment", name));
+        }
+        let first_segment = cloned_segments.remove(0);
+        let val = match first_segment {
+            jsonpath_rust::parser::model::Segment::Selector(selector) => match selector {
+                jsonpath_rust::parser::model::Selector::Name(x) => match x.as_str() {
+                    "input" => &self.input,
+                    "output" => &self.output,
+                    "accum" => &self.accum,
+                    "name" => return Ok(serde_json::Value::String(name.to_string())),
+                    _ => return Err(format!("json path query '{}' for resource '{}' must start with $.input $.output $.accum or $.name", jpq, name)),
+                }
+                _ => return Err(format!("json path query '{}' for resource '{}' must start with $.input $.output $.accum or $.name", jpq, name))
+            }
+            _ => return Err(format!("json path query '{}' for resource '{}' must start with $.input $.output $.accum or $.name", jpq, name)),
+        };
+        // we removed the first segment which pointed at either input,output, or accum
+        // and now we can evaluate the rest of the path query
+        let jpq_eval = JpQuery { segments: cloned_segments };
+        let mut vals = jsonpath_rust::query::js_path_process(&jpq_eval, val)
+            .map_err(|e| format!("failed to process json path '{}': {:?}", jpq_eval.to_string(), e))?;
+        let mut vals: Vec<serde_json::Value> = vals.drain(..).map(|x| x.val().clone()).collect();
+        // TODO: check for not found results.. jsonpath_rust will return an empty array if the lookup fails!
+        let val = if vals.len() == 1 {
+            vals.pop().unwrap()
+        } else {
+            serde_json::Value::Array(vals)
+        };
+        Ok(val)
+    }
+}
+
 pub async fn run_template(
     logger: &'static dyn Log,
     resource_name: &str,
@@ -33,19 +98,20 @@ pub async fn run_template(
     transition_type: &str,
     input: serde_json::Value,
     last_input: Option<serde_json::Value>,
+    last_output: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     log::info!(logger: logger, "{} '{}'", transition_gerund(transition_type), resource_name);
-    let mut out_val = serde_json::Value::Object(Default::default());
+    let mut command_state = CommandState::new(input, last_output);
     // TODO: process directives...
     for (i, command) in transition.cli_commands.drain(..).enumerate() {
         // last input should only be set for update transitions.
         // if its an update, we check if we should run this command:
         if let Some(last_input) = &last_input {
-            if !should_run_update_cmd(&command.directives, last_input, &input)? {
+            if !should_run_update_cmd(&command.directives, last_input, &command_state.input)? {
                 continue;
             }
         }
-        let arg_set = create_arg_set(&input, &command.cmd.arg_transforms)
+        let arg_set = create_arg_set(resource_name, &command_state, &command.cmd.arg_transforms)
             .map_err(|e| format!(
                 "resource '{}' failed to create arg set from template '{}' {}[{}]: {}",
                 resource_name,
@@ -65,9 +131,9 @@ pub async fn run_template(
         // TODO: allow user to define how values are merged via directives...
         // for now we will use default behavior which will be merging objects
         // or if its not an object, then we will take the latest value
-        out_val = default_value_merge(out_val, val);
+        command_state.accum = default_value_merge(command_state.accum, val);
     }
-    Ok(out_val)
+    Ok(command_state.accum)
 }
 
 pub fn should_run_update_cmd(
@@ -241,23 +307,16 @@ pub async fn run_command(arg_set: ArgSet, command: CliCommand) -> Result<serde_j
 }
 
 pub fn create_arg_set(
-    user_input: &serde_json::Value,
+    name: &str,
+    command_state: &CommandState,
     arg_transforms: &[ArgTransform]
 ) -> Result<ArgSet, String> {
     let mut arg_set = ArgSet::new();
     for transform in arg_transforms {
         match transform {
             ArgTransform::Destructure(jp_query) => {
-                let mut vals = jsonpath_rust::query::js_path_process(jp_query, user_input).map_err(|e| format!("failed to process json path '{}': {:?}", jp_query.to_string(), e))?;
-                if vals.len() != 1 {
-                    return Err(format!(
-                        "json path query '{}' did not return exactly 1 json object. found: {:?}",
-                        jp_query.to_string(),
-                        vals.iter().map(|x| x.clone().val().clone()).collect::<Vec<_>>(),
-                    ));
-                }
-                let val = vals.pop().unwrap();
-                let map = match val.val() {
+                let val = command_state.evaluate_arg_transform(name, jp_query)?;
+                let map = match val {
                     serde_json::Value::Object(map) => map,
                     x => return Err(format!("json path query '{}' did not return a json object. found: {:?}", jp_query.to_string(), x))
                 };
@@ -268,15 +327,7 @@ pub fn create_arg_set(
             }
             ArgTransform::Add(string_at_line, jp_query) => {
                 // get value from user's input:
-                let mut vals = jsonpath_rust::query::js_path_process(jp_query, user_input)
-                    .map_err(|e| format!("failed to process json path query '{}'. error: {:?}", jp_query.to_string(), e))?;
-                let mut vals: Vec<serde_json::Value> = vals.drain(..).map(|x| x.val().clone()).collect();
-                // TODO: check for not found results.. jsonpath_rust will return an empty array if the lookup fails!
-                let val = if vals.len() == 1 {
-                    vals.pop().unwrap()
-                } else {
-                    serde_json::Value::Array(vals)
-                };
+                let val = command_state.evaluate_arg_transform(name, jp_query)?;
                 arg_set.insert(string_at_line.s.clone(), val);
             }
         }
@@ -474,5 +525,76 @@ mod test {
         // it passes neither conditions: neither a nor b differ, AND c is not the same:
         let current = serde_json::json!({"a":"a", "b": "b", "c": "notc"});
         assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+    }
+
+    #[test]
+    fn can_evaluate_arg_transform_from_command_state_input() {
+        let cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
+        let jpq = jsonpath_rust::parser::parse_json_path("$.input").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!({"a":"aval"}));
+        let jpq = jsonpath_rust::parser::parse_json_path("$.input.a").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!("aval"));
+    }
+
+    #[test]
+    fn can_evaluate_arg_transform_from_command_state_output() {
+        let cs = CommandState::new(serde_json::json!({"a": "aval"}), Some(serde_json::json!({"aout": "aoutval"})));
+        let jpq = jsonpath_rust::parser::parse_json_path("$.output").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!({"aout":"aoutval"}));
+        let jpq = jsonpath_rust::parser::parse_json_path("$.output.aout").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!("aoutval"));
+
+        // for create TRs, there wont be an output, it will be null.
+        // if for some reason a template create section references output it shouldnt panic, but just return null:
+        let cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
+        let jpq = jsonpath_rust::parser::parse_json_path("$.output").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::Value::Null);
+        let jpq = jsonpath_rust::parser::parse_json_path("$.output.some.value").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::Value::Array(vec![]));
+    }
+
+    #[test]
+    fn can_evaluate_arg_transform_from_command_state_accum() {
+        let mut cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
+        let jpq = jsonpath_rust::parser::parse_json_path("$.accum").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!({}));
+        let jpq = jsonpath_rust::parser::parse_json_path("$.accum.aout").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!([]));
+
+        // now accum actually has a value, it should be look-up-able
+        cs.accum = serde_json::json!({"aout": "aoutval"});
+        let jpq = jsonpath_rust::parser::parse_json_path("$.accum.aout").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!("aoutval"));
+    }
+
+    #[test]
+    fn can_evaluate_arg_transform_from_command_state_resource_name() {
+        let cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
+        let jpq = jsonpath_rust::parser::parse_json_path("$.name").unwrap();
+        let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
+        assert_eq!(evaluated, serde_json::json!("resource1"));
+    }
+
+    #[test]
+    fn evaluate_arg_transform_errs_on_non_input_output_accum_name() {
+        let cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
+        let jpq = jsonpath_rust::parser::parse_json_path("$.this.is.invalid").unwrap();
+        let err = cs.evaluate_arg_transform("resource1", &jpq).expect_err("it should error");
+        assert_eq!(err, "json path query '$thisisinvalid' for resource 'resource1' must start with $.input $.output $.accum or $.name");
+        let jpq = jsonpath_rust::parser::parse_json_path("$").unwrap();
+        let err = cs.evaluate_arg_transform("resource1", &jpq).expect_err("it should error");
+        assert_eq!(err, "arg transform json path query for resource 'resource1' must have at least 1 segment");
+        let jpq = jsonpath_rust::parser::parse_json_path("$[0]").unwrap();
+        let err = cs.evaluate_arg_transform("resource1", &jpq).expect_err("it should error");
+        assert_eq!(err, "json path query '$0' for resource 'resource1' must start with $.input $.output $.accum or $.name");
     }
 }

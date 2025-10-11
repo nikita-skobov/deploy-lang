@@ -739,6 +739,7 @@ pub async fn transition_single(
                 "create",
                 current_input.clone(),
                 None,
+                None,
             ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
             Ok(ResourceInState {
                 resource_name: current_entry.resource_name.s,
@@ -760,6 +761,7 @@ pub async fn transition_single(
                 "update",
                 current_input.clone(),
                 Some(state_entry.last_input),
+                Some(state_entry.output),
             ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
             Ok(ResourceInState {
                 resource_name: current_entry.resource_name.s,
@@ -781,6 +783,7 @@ pub async fn transition_single(
                 "delete",
                 current_input.clone(),
                 Some(state_entry.last_input),
+                Some(state_entry.output),
             ).await.map_err(|e| (state_entry.resource_name.clone(), e))?;
             // deletes can drop their output, input, and dependency information, we're not saving it to state.
             Ok(ResourceInState {
@@ -1499,7 +1502,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         dcl.templates.push(template);
         let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
@@ -1533,7 +1536,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         dcl.templates.push(template);
         let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
@@ -1580,7 +1583,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         template.update = Some(Default::default());
         dcl.templates.push(template);
@@ -1624,7 +1627,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.clone(), ..Default::default() });
         template.update = Some(Default::default());
         if let Some(upd) = &mut template.update {
@@ -2005,4 +2008,84 @@ resource xyz(new)
             "resource 'resourceA' OK"
         ]);
     }
+
+    #[tokio::test]
+    async fn templates_can_reference_output_and_accum() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  update
+    echo
+      abc $.output.someval
+    echo
+      xyz $.accum
+
+resource xyz(resourceA)
+    {}
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            output: serde_json::json!({"someval": "somevalue"}),
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the update runs 2 commands
+        // the first echoes "--abc somevalue\n"
+        // the second echoes "--xyz $.accum"
+        // and accumulator should be updated to contain the value of the first output
+        assert_eq!(resource_a.output.as_str().unwrap(), "--xyz --abc somevalue\n\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn output_during_update_unchanged() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+  update
+    echo
+      abc $.output.someval
+    echo
+      xyz $.output
+
+resource xyz(resourceA)
+    {}
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // resourceA has been deployed before, it should cause an update
+        state.resources.insert("resourceA".to_string(), ResourceInState {
+            template_name: "xyz".to_string(),
+            resource_name: "resourceA".to_string(),
+            last_input: serde_json::json!({ "a": "a", "b": "b" }),
+            output: serde_json::json!({"someval": "somevalue"}),
+            ..Default::default()
+        });
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the update runs 2 commands
+        // the first echoes "--abc somevalue\n"
+        // this becomes the accumulator
+        // but the object should still be {"someval": "somevalue"}
+        // so on the second command it echoes "--xyz {"someval":"somevalue"}"
+        assert_eq!(resource_a.output.as_str().unwrap(), "--xyz {\"someval\":\"somevalue\"}\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
 }
