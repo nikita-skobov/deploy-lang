@@ -79,6 +79,7 @@ pub enum ArgTransform {
 /// a directive must be on a single line, and therefore if we wish to show
 /// diagnostics on an invalid directive we can infer the line from the "kw"
 #[derive(Debug, PartialEq, Clone)]
+#[non_exhaustive]
 pub enum Directive {
     /// only relevant to update commands: a diff directive
     /// requires that the value the query resolves to must be different

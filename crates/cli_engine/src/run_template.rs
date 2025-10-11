@@ -334,10 +334,145 @@ mod test {
         );
     }
 
+    macro_rules! same {
+        ($($x:literal),*) => {
+            Directive::Same { kw: Default::default(), query: vec![$(jsonpath_rust::parser::parse_json_path($x).unwrap(),)*]}
+        };
+    }
+
+    macro_rules! diff {
+        ($($x:literal),*) => {
+            Directive::Diff { kw: Default::default(), query: vec![$(jsonpath_rust::parser::parse_json_path($x).unwrap(),)*]}
+        };
+    }
+
     #[test]
-    fn diff_directive_checks_work_multiple_diff() {
-        // we say this command should only run
-        // if field A has changed AND field B has changed
-        
+    fn should_run_update_cmd_works_simple_same() {
+        // a must be the same for it to run the update command
+        let directives = vec![
+            same!("$.a")
+        ];
+        let previous = serde_json::json!({"a":"a"});
+        let current = serde_json::json!({"a":"a"});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // the value of a is now different, it should not run this command
+        let current = serde_json::json!({"a":"b"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+    }
+
+    #[test]
+    fn should_run_update_cmd_works_simple_diff() {
+        // a must be different for it to run the update command
+        let directives = vec![
+            diff!("$.a")
+        ];
+        let previous = serde_json::json!({"a":"a"});
+        let current = serde_json::json!({"a":"a"});
+        // command is not to be ran because the value of a has not changed
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // the value of a is now different, it should run
+        let current = serde_json::json!({"a":"b"});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+    }
+
+    #[test]
+    fn should_run_update_cmd_works_multiple_same() {
+        // a AND b must be the same for it to run the update command
+        let directives = vec![
+            same!("$.a", "$.b")
+        ];
+        let previous = serde_json::json!({"a":"a", "b": "b"});
+        let current = serde_json::json!({"a":"a", "b": "b"});
+        // command is to be ran because the value of a and b are the same in prev and current
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // the value of a is now different, it should not run
+        let current = serde_json::json!({"a":"b", "b": "b"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // the value of b is now different, it should not run:
+        let current = serde_json::json!({"a":"a", "b": "c"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // both are now different, it should not run:
+        let current = serde_json::json!({"a":"1", "b": "2"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // missing one of the values: it should not run
+        let current = serde_json::json!({"a":"a"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // missing all values: it should not run
+        let current = serde_json::json!({});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // entirely different type: it should not run
+        let current = serde_json::json!(null);
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+    }
+
+    #[test]
+    fn should_run_update_cmd_works_multiple_diff() {
+        // a AND b must BOTH be different for it to run the update command
+        let directives = vec![
+            diff!("$.a", "$.b")
+        ];
+        let previous = serde_json::json!({"a":"a", "b": "b"});
+        let current = serde_json::json!({"a":"a", "b": "b"});
+        // command is NOT to be ran because the value of a and b are the same in prev and current
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // the value of a is now different, it should still not run because b is the same
+        let current = serde_json::json!({"a":"b", "b": "b"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // the value of b is now different, it should still not run because a is the same:
+        let current = serde_json::json!({"a":"a", "b": "c"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // both are now different, it should run:
+        let current = serde_json::json!({"a":"1", "b": "2"});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // missing one of the values: it should not run because a is still the same
+        let current = serde_json::json!({"a":"a"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // missing all values: it should run because both values are missing therefore both different
+        let current = serde_json::json!({});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // entirely different type: it should run
+        let current = serde_json::json!(null);
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+    }
+
+    #[test]
+    fn should_run_update_cmd_works_directives_ored_together() {
+        // a AND b must BOTH be different for it to run the update command
+        // OR
+        // c must be the same
+        let directives = vec![
+            diff!("$.a", "$.b"),
+            same!("$.c")
+        ];
+        let previous = serde_json::json!({"a":"a", "b": "b", "c": "c"});
+        let current = serde_json::json!({"a":"a", "b": "b", "c": "c"});
+        // command is to be ran because c is the same
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // c is not the same, but a and b both differ, so it should run
+        let current = serde_json::json!({"a":"nota", "b": "notb", "c": "notc"});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // it passes both conditions: c is the same AND a and b differ
+        let current = serde_json::json!({"a":"nota", "b": "notb", "c": "c"});
+        assert_eq!(true, should_run_update_cmd(&directives, &previous, &current).unwrap());
+
+        // it passes neither conditions: neither a nor b differ, AND c is not the same:
+        let current = serde_json::json!({"a":"a", "b": "b", "c": "notc"});
+        assert_eq!(false, should_run_update_cmd(&directives, &previous, &current).unwrap());
     }
 }
