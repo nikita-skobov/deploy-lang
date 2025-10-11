@@ -363,7 +363,7 @@ pub fn add_body_line<'a>(
         Some((l, _comment)) => l,
         None => remaining,
     };
-    if !body_line.s.is_empty() {
+    if !body_line.s.is_empty() && !body_line.s.chars().all(|c| c.is_ascii_whitespace()) {
         body.push(body_line);
     }
     Ok(())

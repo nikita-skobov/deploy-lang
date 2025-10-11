@@ -481,6 +481,50 @@ template something
     }
 
     #[test]
+    fn can_parse_with_comments() {
+        let document = r#"
+template xyz
+  create
+    # comment xyz
+    echo hello
+  # comment eeee
+  update
+    # comment abc
+    echo
+      # comment here
+      abc $.output.someval
+    echo
+      # comment there
+      xyz $.accum
+
+resource xyz(resourceA)
+    {}
+"#;
+        let mut dcl = crate::parse_and_validate(document).expect("it should not error");
+        assert_eq!(dcl.resources.len(), 1);
+        assert_eq!(dcl.templates.len(), 1);
+        let mut template = dcl.templates.remove(0);
+        assert_eq!(template.create.directives.len(), 0);
+        assert_eq!(template.create.cli_commands.len(), 1);
+        assert_eq!(template.create.cli_commands[0].cmd.command, "echo");
+        let mut update = template.update.take().expect("it should have an update section");
+        assert_eq!(update.directives.len(), 0);
+        assert_eq!(update.cli_commands.len(), 2);
+        let first = update.cli_commands.remove(0);
+        assert_eq!(first.cmd.arg_transforms.len(), 1);
+        assert_matches!(&first.cmd.arg_transforms[0], ArgTransform::Add(x, y) => {
+            assert_eq!(x.s, "abc");
+            assert_eq!(y.to_string(), "$outputsomeval");
+        });
+        let next = update.cli_commands.remove(0);
+        assert_eq!(next.cmd.arg_transforms.len(), 1);
+        assert_matches!(&next.cmd.arg_transforms[0], ArgTransform::Add(x, y) => {
+            assert_eq!(x.s, "xyz");
+            assert_eq!(y.to_string(), "$accum");
+        });
+    }
+
+    #[test]
     fn can_parse_multiple_commands_each_with_directives() {
         let document = r#"
 template something
