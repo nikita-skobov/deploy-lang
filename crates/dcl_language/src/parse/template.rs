@@ -112,6 +112,13 @@ pub enum Directive {
     /// OR if the value of $.a AND the value of $.b is the same in prev and current
     Same { kw: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
 
+    /// causes the command's output to be ignored entirely and not merged into the accumulator.
+    /// this directive doesnt take any args. it should just be the directive keyword eg:
+    /// ```text
+    /// @dropoutput
+    /// ```
+    DropOutput { kw: StringAtLine },
+
     // TODO: support a diff same directive that ands together same and diff conditions
     // as otherwise there's no way to support running a command with multiple same/diff conditions
     // anded together. at the root level they are ORed together
@@ -264,6 +271,9 @@ pub fn parse_directive<'a>(
             let query = parse_json_directive_query(rest.s)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse same directive json path query: {:?}", e)))?;
             Ok(Directive::Same { kw: kw.to_owned(), query })
+        }
+        "dropoutput" => {
+            Ok(Directive::DropOutput { kw: kw.to_owned() })
         }
         unknown_kw => {
             Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
@@ -478,6 +488,27 @@ template something
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
         assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
+    }
+
+    #[test]
+    fn can_parse_dropoutput_directive() {
+        let document = r#"
+template something
+  create
+    @dropoutput
+    echo
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dcl.templates.len(), 1);
+        assert_eq!(dcl.templates[0].create.cli_commands.len(), 1);
+        assert_eq!(dcl.templates[0].create.cli_commands[0].directives.len(), 1);
+        assert_matches!(&dcl.templates[0].create.cli_commands[0].directives[0], Directive::DropOutput { kw } => {
+            assert_eq!(kw.s, "dropoutput");
+            assert_eq!(kw.line, 3);
+            assert_eq!(kw.col, 5);
+        });
     }
 
     #[test]

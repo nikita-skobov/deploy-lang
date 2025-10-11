@@ -2049,6 +2049,57 @@ resource xyz(resourceA)
     }
 
     #[tokio::test]
+    async fn accum_overridden_if_non_object() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+    echo bye
+
+resource xyz(resourceA)
+    {}
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the output of `echo bye` should override the accum, which was previously
+        // the output of `echo hello`
+        assert_eq!(resource_a.output.as_str().unwrap(), "bye\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn templates_can_drop_output_of_specific_command() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    echo hello
+    @dropoutput
+    echo bye
+
+resource xyz(resourceA)
+    {}
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        // the output of the second echo normally would have overridden the first output
+        // but because `echo bye` has @dropoutput it should be dropped
+        assert_eq!(resource_a.output.as_str().unwrap(), "hello\n");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
     async fn output_during_update_unchanged() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);

@@ -113,6 +113,7 @@ pub async fn run_template(
                 continue;
             }
         }
+        let should_drop_output = command.directives.iter().any(|d| match d { Directive::DropOutput { .. } => true, _ => false });
         let arg_set = create_arg_set(resource_name, &command_state, &command.cmd.arg_transforms)
             .map_err(|e| format!(
                 "resource '{}' failed to create arg set from template '{}' {}[{}]: {}",
@@ -133,7 +134,9 @@ pub async fn run_template(
         // TODO: allow user to define how values are merged via directives...
         // for now we will use default behavior which will be merging objects
         // or if its not an object, then we will take the latest value
-        command_state.accum = default_value_merge(command_state.accum, val);
+        if !should_drop_output {
+            command_state.accum = default_value_merge(command_state.accum, val);
+        }
     }
     Ok(command_state.accum)
 }
