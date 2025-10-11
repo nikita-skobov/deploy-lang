@@ -42,7 +42,10 @@
 	"scripts": {
 		"compile": "tsc -b",
 		"build-rs": "cargo build -p language_server && cp ../target/debug/language_server ./out/",
-		"build": "npm run compile && npm run build-rs"
+		"build-rs-release": "cargo build --release -p language_server && cp ../target/release/language_server ./out/",
+		"build": "npm run compile && npm run build-rs",
+		"build-release": "npm run compile && npm run build-rs-release",
+		"package": "npm run build-release && vsce package"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.13.0",
