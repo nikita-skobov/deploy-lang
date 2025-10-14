@@ -66,7 +66,7 @@
               "match": "^(\\s+)(@[\\w-]+)(\\s*)?([^#]+)?",
               "captures": {
                 "2": {
-                  "name": "meta.attribute.dcl"
+                  "name": "storage.type.dcl"
                 },
                 "4": {
                   "patterns": [
@@ -89,7 +89,7 @@
                 {
                   "match": "^(\\s+)(\\.\\.\\.)([^#]+)",
                   "captures": {
-                    "3": { "name": "keyword.other.dcl" }
+                    "3": { "name": "variable.other.constant.dcl" }
                   }
                 },
                 {
@@ -102,7 +102,7 @@
                   "match": "^(\\s+)([\\w-]+)(\\s)([^#]+)",
                   "captures": {
                     "2": { "name": "variable.other.dcl" },
-                    "4": { "name": "keyword.other.dcl" }
+                    "4": { "name": "variable.other.constant.dcl" }
                   }
                 }
               ]
@@ -260,7 +260,7 @@
     },
     "jsonpath": {
       "match": "\\$(\\.([\\w]+|\\*)|\\[([-\\d]+|('[\\w\\ \\-\\d]*'|\"[\\w\\ \\-\\d]*\"))\\])*",
-      "name": "keyword.other.dcl"
+      "name": "variable.other.constant.dcl"
     },
     "json": {
       "patterns": [
