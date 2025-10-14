@@ -4,7 +4,7 @@ use std::error::Error;
 use dcl_language::parse::{Logger, Section, SpannedDiagnostic};
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
-use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, InsertReplaceEdit, TextEdit, Url};
+use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, Documentation, InsertReplaceEdit, MarkupContent, TextEdit, Url};
 use lsp_types::{
     Diagnostic,
     DiagnosticSeverity,
@@ -199,18 +199,50 @@ pub fn handle_template_jsonpath_completion_request<'a>(
     let mut completions = Vec::with_capacity(4);
     completions.push(CompletionItem {
         label: "accum".to_string(),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: r#"templates can reference values from resources.
+referencing `$.accum` reads from the accumulator json object during deploy.
+the accumulator object is an ephemeral object that simply contains the accumulated output state
+of the resource across all of the commands defined in the template the resource references.
+the accumulator object is distinct from `$.output` because `$.output` is a static object that contains
+the entire json object output from the last time the resource was deployed. this is used for templates
+that need to reference previous values, while not affecting the current deployment's output.
+every command in a template will merge its output into the accumulator. after the final command runs in a template,
+the accumulator object becomes the output for this resource."#.to_string(),
+        })),
         ..Default::default()
     });
     completions.push(CompletionItem {
         label: "input".to_string(),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: r#"templates can reference values from resources.
+referencing `$.input` reads the input json object of the resource.
+the input does not change during the course of a deploy."#.to_string(),
+        })),
         ..Default::default()
     });
     completions.push(CompletionItem {
         label: "name".to_string(),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: r#"templates can reference values from resources.
+referencing `$.name` simply reads the current resource's name.
+this value does not change during the course of a deploy."#.to_string(),
+        })),
         ..Default::default()
     });
     completions.push(CompletionItem {
         label: "output".to_string(),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: r#"templates can reference values from resources.
+referencing `$.output` reads from the output json object from the **last** deploy.
+this value is needed by templates that require referencing prior state to complete an update/delete.
+note that this value does not change during the course of a deploy. if your template requires
+referencing values between commands, that must be done via `$.accum` not `$.output`."#.to_string(),
+        })),
         ..Default::default()
     });
     Some(completions)
