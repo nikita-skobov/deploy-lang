@@ -169,8 +169,61 @@ pub fn handle_completion_request_ex<'a>(
             found_section = Some(section);
         }
     }
-    // collect json object from all other resource sections:
     let found_section = found_section?;
+    match found_section.typ.s {
+        dcl_language::parse::resource::SECTION_TYPE => {
+            handle_resource_jsonpath_completion_request(all_valid_sections, found_section, json_path_query, original_pos)
+        },
+        dcl_language::parse::template::SECTION_TYPE => {
+            handle_template_jsonpath_completion_request(all_valid_sections, found_section, json_path_query, original_pos)
+        }
+        _ => None,
+    }
+}
+
+pub fn handle_template_jsonpath_completion_request<'a>(
+    _all_valid_sections: &Vec<Section<'a>>,
+    _found_section: &Section<'a>,
+    json_path_query: jsonpath_rust::parser::model::JpQuery,
+    _original_pos: Position,
+) -> Option<Vec<CompletionItem>> {
+    // any jsonpath within a template section must start with $.input $.output $.accum or $.name
+    // the only exception is within directives, which may reference arbitrary output object shapes
+    // but we do not know those shapes here, so we cannot assist.
+    // the only thing we can assist with is if the user is typing $.
+    // then we can assume they will type one of the known prefixes
+    if !json_path_query.segments.is_empty() {
+        // we dont know the shape of anything beyond the initial known prefix
+        return Some(vec![])
+    }
+    let mut completions = Vec::with_capacity(4);
+    completions.push(CompletionItem {
+        label: "accum".to_string(),
+        ..Default::default()
+    });
+    completions.push(CompletionItem {
+        label: "input".to_string(),
+        ..Default::default()
+    });
+    completions.push(CompletionItem {
+        label: "name".to_string(),
+        ..Default::default()
+    });
+    completions.push(CompletionItem {
+        label: "output".to_string(),
+        ..Default::default()
+    });
+    Some(completions)
+}
+
+pub fn handle_resource_jsonpath_completion_request<'a>(
+    all_valid_sections: &Vec<Section<'a>>,
+    found_section: &Section<'a>,
+    json_path_query: jsonpath_rust::parser::model::JpQuery,
+    original_pos: Position,
+) -> Option<Vec<CompletionItem>> {
+    // we're processing a json path within a resource section.
+    // collect json object from all other resource sections:
     let mut dcl = dcl_language::DclFile::default();
     for section in all_valid_sections.iter() {
         if std::ptr::addr_eq(section, found_section) {
@@ -435,5 +488,58 @@ resource some_template(other_resource)
             }
             CompletionTextEdit::Edit(_) => panic!("it should be a insert and replace")
         }
+    }
+
+    #[test]
+    fn template_jsonpath_completions_should_be_root_keywords_only() {
+        let document = r#"
+template something
+  create
+    # some comment
+    @accum [$.input, $.something]
+    echo hello
+      ... $.
+
+resource something(abc)
+    {}
+"#.to_string();
+
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(6, 12);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 4);
+        res.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(&res[0].label, "accum");
+        assert_eq!(&res[1].label, "input");
+        assert_eq!(&res[2].label, "name");
+        assert_eq!(&res[3].label, "output");
+    }
+
+    #[test]
+    fn shouldnt_give_jsonpath_completions_for_templates_deeper_than_root() {
+        let document = r#"
+template something
+  create
+    @accum [$.input, $.something]
+    echo hello
+      # user already typed $.input.thing, we dont know the shape of "thing" so shouldnt give completions
+      ... $.input.thing.
+
+resource something(abc)
+    {}
+"#.to_string();
+
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(6, 24);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        let res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 0);
     }
 }
