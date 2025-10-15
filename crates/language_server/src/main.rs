@@ -439,10 +439,20 @@ fn main_loop(
                 send_log(&connection, &format!("unexpected response received: {:?}", response));
             }
             Message::Notification(notif) => {
-                if notif.method == "textDocument/didChange" {
-                    let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
-                    let uri = params.text_document.uri;
-                    let new_document = params.content_changes.first().map(|x| x.text.as_str()).unwrap_or_default();
+                if notif.method == "textDocument/didChange" || notif.method == "textDocument/didOpen" {
+                    let (uri, new_document) = match notif.method.as_str() {
+                        "textDocument/didChange" => {
+                            let params: DidChangeTextDocumentParams = serde_json::from_value(notif.params).unwrap();
+                            (params.text_document.uri, params.content_changes.first().map(|x| x.text.clone()).unwrap_or_default())
+                        }
+                        "textDocument/didOpen" => {
+                            let params: DidOpenTextDocumentParams = serde_json::from_value(notif.params).unwrap();
+                            (params.text_document.uri, params.text_document.text)
+                        }
+                        _ => {
+                            continue;
+                        }
+                    };
                     parsed_docs = HashMap::new();
                     known_docs.insert(uri.clone(), new_document.to_string());
                     let diagnostics = if let Some(s) = known_docs.get(&uri) {
@@ -466,18 +476,9 @@ fn main_loop(
                         }
                     )).unwrap();
                     send_log(&connection, "sending diagnostics");
-                } else if notif.method == "textDocument/didOpen" {
-                    let params: DidOpenTextDocumentParams = serde_json::from_value(notif.params).unwrap();
-                    let uri = &params.text_document.uri;
-                    parsed_docs = HashMap::new();
-                    known_docs.insert(uri.clone(), params.text_document.text);
-                    if let Some(text) = known_docs.get(uri) {
-                        let (_, valid_sections) = split_sections(text, &connection);
-                        parsed_docs.insert(uri.clone(), ParsedDoc { parsed: valid_sections, doc: text });
-                    } else { continue; }
-                } else {
-                    send_log(&connection, &format!("received unexpected notification: {}", notif.method));
+                    continue;
                 }
+                send_log(&connection, &format!("received unexpected notification: {}", notif.method));
             }
         }
     }
