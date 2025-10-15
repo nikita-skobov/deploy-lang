@@ -46,7 +46,7 @@ impl IndentaionCharacter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Section<'a> {
     pub typ: StrAtLine<'a>,
     pub parameters: Option<StrAtLine<'a>>,

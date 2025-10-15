@@ -4,7 +4,7 @@ use std::error::Error;
 use dcl_language::parse::{Logger, Section, SpannedDiagnostic};
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
-use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, Documentation, InsertReplaceEdit, MarkupContent, TextEdit, Url};
+use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, DidOpenTextDocumentParams, Documentation, Hover, HoverContents, HoverParams, HoverProviderCapability, InsertReplaceEdit, MarkupContent, TextEdit, Url};
 use lsp_types::{
     Diagnostic,
     DiagnosticSeverity,
@@ -36,6 +36,7 @@ fn main() {
             trigger_characters: Some(vec![".".to_string()]),
             ..Default::default()
         }),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         ..Default::default()
     };
 
@@ -327,9 +328,75 @@ pub fn handle_completion_request<'a>(
     serde_json::to_value(completion_items).ok()
 }
 
+pub fn handle_hover_request<'a>(
+    params: HoverParams,
+    doc: &ParsedDoc<'a>,
+) -> Option<Hover> {
+    let Position { line, character } = params.text_document_position_params.position;
+    let line_index = line as usize;
+    // remember a character position is really between two characters:
+    // its the position of the cursor. so column 1 means user typed a char
+    // at the start of the line, and their cursor is currently after that first character
+    // so for us to look up the character they just typed, we'd need to get the character at index 0
+    let column = character as usize;
+    // get the section that contains the hover pos
+    let section = doc.parsed.iter().find(|x| line_index >= x.start_line && line_index <= x.end_line)?;
+    match section.typ.s {
+        dcl_language::parse::template::SECTION_TYPE => {
+            let body_line = section.body.iter().find(|x| x.line == line_index)?;
+            let word = body_line.split_ascii_whitespace().into_iter().find(|x| {
+                let word_start = x.col;
+                if column < word_start {
+                    return false;
+                }
+                let word_end = word_start + x.s.chars().count();
+                column >= word_start && column <= word_end
+            })?;
+            if word.s.starts_with('@') {
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: lsp_types::MarkupKind::Markdown,
+                        value: format!(r#"this be a directive"#),
+                    }),
+                    range: None,
+                });
+            }
+            None
+        }
+        // other section types not supported for now
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ParsedDoc<'a> {
     pub doc: &'a String,
     pub parsed: Vec<Section<'a>>,
+}
+
+
+macro_rules! get_parsed_doc {
+    ($parsed_docs: ident, $connection: ident, $uri: ident, $known_docs: ident) => {
+        {
+            let parsed = $parsed_docs.get($uri);
+            let parsed = if let Some(parsed) = parsed {
+                parsed
+            } else {
+                match $known_docs.get(&$uri) {
+                    Some(s) => {
+                        let (_, valid_sections) = split_sections(s, &$connection);
+                        $parsed_docs.insert($uri.clone(), ParsedDoc { parsed: valid_sections, doc: s });
+                    }
+                    None => continue
+                };
+                match $parsed_docs.get(&$uri) {
+                    Some(parsed) => parsed,
+                    None => continue
+                }
+            };
+            parsed
+        }
+    };
 }
 
 fn main_loop(
@@ -346,26 +413,24 @@ fn main_loop(
                 if request.method == "textDocument/completion" {
                     let params: CompletionParams = serde_json::from_value(request.params).unwrap();
                     let uri = &params.text_document_position.text_document.uri;
-                    let parsed = parsed_docs.get(uri);
-                    let parsed = if let Some(parsed) = parsed {
-                        parsed
-                    } else {
-                        match known_docs.get(&uri) {
-                            Some(s) => {
-                                let (_, valid_sections) = split_sections(s, &connection);
-                                parsed_docs.insert(uri.clone(), ParsedDoc { parsed: valid_sections, doc: s });
-                            }
-                            None => continue
-                        };
-                        match parsed_docs.get(&uri) {
-                            Some(parsed) => parsed,
-                            None => continue
-                        }
-                    };
+                    let parsed = get_parsed_doc!(parsed_docs, connection, uri, known_docs);
                     let result = handle_completion_request(params, parsed);
                     let result = if result.is_none() {
                         Some(serde_json::Value::Null)
                     } else { result };
+                    send_response(&connection, Response { id: request.id, result, error: None });
+                    continue;
+                }
+                if request.method == "textDocument/hover" {
+                    let params: HoverParams = serde_json::from_value(request.params).unwrap();
+                    let uri = &params.text_document_position_params.text_document.uri;
+                    // params.work_done_progress_params.work_done_token.unwrap()
+                    let parsed = get_parsed_doc!(parsed_docs, connection, uri, known_docs);
+                    let result = handle_hover_request(params, parsed);
+                    let result = match result.and_then(|x| serde_json::to_value(x).ok()) {
+                        Some(x) => Some(x),
+                        None => Some(serde_json::Value::Null),
+                    };
                     send_response(&connection, Response { id: request.id, result, error: None });
                     continue;
                 }
@@ -401,6 +466,15 @@ fn main_loop(
                         }
                     )).unwrap();
                     send_log(&connection, "sending diagnostics");
+                } else if notif.method == "textDocument/didOpen" {
+                    let params: DidOpenTextDocumentParams = serde_json::from_value(notif.params).unwrap();
+                    let uri = &params.text_document.uri;
+                    parsed_docs = HashMap::new();
+                    known_docs.insert(uri.clone(), params.text_document.text);
+                    if let Some(text) = known_docs.get(uri) {
+                        let (_, valid_sections) = split_sections(text, &connection);
+                        parsed_docs.insert(uri.clone(), ParsedDoc { parsed: valid_sections, doc: text });
+                    } else { continue; }
                 } else {
                     send_log(&connection, &format!("received unexpected notification: {}", notif.method));
                 }
@@ -454,6 +528,19 @@ mod test {
                 partial_result_token: None,
             },
             context: None,
+        }
+    }
+
+    fn hover_params_with_position(
+        line: u32,
+        column: u32
+    ) -> HoverParams {
+        HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: Url::parse("https://example.net").unwrap() },
+                position: Position { line, character: column }
+            },
+            work_done_progress_params: WorkDoneProgressParams { work_done_token: None },
         }
     }
 
@@ -573,5 +660,57 @@ resource something(abc)
         };
         let res = handle_completion_request_ex(params, &parsed).unwrap();
         assert_eq!(res.len(), 0);
+    }
+
+    #[test]
+    fn can_give_hover_hints_for_directives() {
+        let document = r#"
+template ewqew
+  create
+    @dropoutput # comment
+    echo
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let expected_hint = "this be a directive";
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // its before the @ so it shouldnt give anything
+        let params = hover_params_with_position(3, 3);
+        let x = handle_hover_request(params, &parsed);
+        assert!(x.is_none());
+
+        // the @ character should give a hint
+        let params = hover_params_with_position(3, 4);
+        let x = handle_hover_request(params, &parsed).unwrap();
+        let markup = match x.contents {
+            HoverContents::Markup(markup_content) => markup_content,
+            _ => panic!("wrong hover content type")
+        };
+        assert_eq!(markup.value, expected_hint);
+
+        // in the middle of the directive should give a hint
+        let params = hover_params_with_position(3, 9);
+        let x = handle_hover_request(params, &parsed).unwrap();
+        let markup = match x.contents {
+            HoverContents::Markup(markup_content) => markup_content,
+            _ => panic!("wrong hover content type")
+        };
+        assert_eq!(markup.value, expected_hint);
+
+        // the last character should still give a hint
+        let params = hover_params_with_position(3, 15);
+        let x = handle_hover_request(params, &parsed).unwrap();
+        let markup = match x.contents {
+            HoverContents::Markup(markup_content) => markup_content,
+            _ => panic!("wrong hover content type")
+        };
+        assert_eq!(markup.value, expected_hint);
+
+        // the space between the directive and the comment shouldnt give any hint
+        let params = hover_params_with_position(3, 16);
+        let x = handle_hover_request(params, &parsed);
+        assert!(x.is_none());
     }
 }
