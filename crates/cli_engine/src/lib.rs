@@ -358,12 +358,20 @@ pub fn remove_bracketed_selector_quotes<const C: char>(s: &mut String) {
     }
 }
 
-pub fn get_all_transient_dependencies_map(trs: &[TrWithTemplate]) -> Result<HashMap<String, Vec<String>>, String> {
+pub fn get_all_transient_dependencies_map(
+    trs: &[TrWithTemplate],
+    done_resources: &HashMap<String, ResourceInState>,
+) -> Result<HashMap<String, Vec<String>>, String> {
     // first, collect a map of all immediate dependencies:
     let mut immediate_dep_map = HashMap::with_capacity(trs.len());
     for tr in trs {
         let immediate_deps = get_immediate_dependencies(tr)?;
         immediate_dep_map.insert(tr.tr.get_resource_name().to_string(), immediate_deps);
+    }
+    // ensure to also add all of the done resources, otherwise some lookups will fail
+    // where a tr depends on a resource thats already done
+    for resource in done_resources.values() {
+        immediate_dep_map.insert(resource.resource_name.clone(), resource.depends_on.clone());
     }
     let mut transient_dep_map = HashMap::with_capacity(immediate_dep_map.len());
     // next, for each Tr, get all of its transient dependencies by building a vec
@@ -449,8 +457,12 @@ pub fn collect_all_transient_deps<'a>(
     Ok(())
 }
 
-pub fn get_all_transient_dependencies(current: &TrWithTemplate, trs: &[TrWithTemplate]) -> Result<Vec<String>, String> {
-    let mut map = get_all_transient_dependencies_map(trs)?;
+pub fn get_all_transient_dependencies(
+    done_resources: &HashMap<String, ResourceInState>,
+    current: &TrWithTemplate,
+    trs: &[TrWithTemplate],
+) -> Result<Vec<String>, String> {
+    let mut map = get_all_transient_dependencies_map(trs, done_resources)?;
     map.remove(current.tr.get_resource_name()).ok_or_else(|| format!("resource '{}' not found in map of all resources", current.tr.get_resource_name()))
 }
 
@@ -530,7 +542,7 @@ pub async fn perform_update_batch(
     mut batch: Vec<TrWithTemplate>,
 ) -> Result<(), String> {
     // get map of names of resources to a flat list of all transient dependencies of that resource
-    let dependency_map = get_all_transient_dependencies_map(&batch)?;
+    let dependency_map = get_all_transient_dependencies_map(&batch, &state.resources)?;
     let dep_map = &dependency_map;
     if batch.is_empty() { return Ok(()) }
 
@@ -1238,6 +1250,7 @@ mod test {
 
     #[test]
     fn can_get_all_transient_deps_duplicate_ok() {
+        let done_resources = HashMap::new();
         let a = create_tr!("a"; r#"{"1": $.b, "2": $.c}"#);
         let b = create_tr!("b"; r#"{"1": $.c}"#);
         let c = create_tr!("c"; r#"{}"#);
@@ -1247,13 +1260,14 @@ mod test {
         // B depends on C
         // C depends on nothing.
         // this should be valid, and all transient deps of A should be B and C
-        let mut deps = get_all_transient_dependencies(current, &trs).expect("it shouldnt error");
+        let mut deps = get_all_transient_dependencies(&done_resources, current, &trs).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps, ["b", "c"]);
     }
 
     #[test]
     fn can_get_all_transient_deps_simple_ok() {
+        let done_resources = HashMap::new();
         let a = create_tr!("a"; r#"{"1": $.b}"#);
         let b = create_tr!("b"; r#"{"1": $.c}"#);
         let c = create_tr!("c"; r#"{}"#);
@@ -1263,35 +1277,38 @@ mod test {
         // B depends on C
         // C depends on nothing.
         // this should be valid, and all transient deps of A should be B and C
-        let mut deps = get_all_transient_dependencies(current, &trs).expect("it shouldnt error");
+        let mut deps = get_all_transient_dependencies(&done_resources, current, &trs).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps, ["b", "c"]);
     }
 
     #[test]
     fn transient_deps_checks_for_self_dep_err() {
+        let done_resources = HashMap::new();
         let a = create_tr!("a"; r#"{"1": $.a}"#);
         let trs = [a];
         let current = &trs[0];
         // A depends on A which should be an error
-        let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
+        let err = get_all_transient_dependencies(&done_resources, current, &trs).expect_err("it should error");
         assert_eq!(err, "resource 'a' cannot depend on itself");
     }
 
     #[test]
     fn transient_deps_checks_for_self_dep_err_deep() {
+        let done_resources = HashMap::new();
         let a = create_tr!("a"; r#"{"1": $.b}"#);
         let b = create_tr!("b"; r#"{"1": $.c}"#);
         let c = create_tr!("c"; r#"{"1": $.c}"#);
         let trs = [a, b, c];
         let current = &trs[0];
         // C depends on C which should be an error
-        let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
+        let err = get_all_transient_dependencies(&done_resources, current, &trs).expect_err("it should error");
         assert_eq!(err, "resource 'c' cannot depend on itself");
     }
 
     #[test]
     fn can_get_all_transient_deps_deep_circle() {
+        let done_resources = HashMap::new();
         let a = create_tr!("a"; r#"{"1": $.b}"#);
         let b = create_tr!("b"; r#"{"1": $.c}"#);
         let c = create_tr!("c"; r#"{"1": $.d}"#);
@@ -1303,8 +1320,40 @@ mod test {
         // C depends on D
         // D depends on A
         // this should be invalid because A transiently depends on D which depends on A.
-        let err = get_all_transient_dependencies(current, &trs).expect_err("it should error");
+        let err = get_all_transient_dependencies(&done_resources, current, &trs).expect_err("it should error");
         assert!(err.starts_with("circular dependency detected"));
+    }
+
+    #[test]
+    fn can_get_all_transient_deps_with_some_being_done() {
+        let mut done_resources = HashMap::new();
+        let a = create_tr!("a"; r#"{"1": $.b}"#);
+        done_resources.insert("d".to_string(), ResourceInState {
+            resource_name: "d".to_string(),
+            ..Default::default()
+        });
+        done_resources.insert("c".to_string(), ResourceInState {
+            resource_name: "c".to_string(),
+            depends_on: vec!["d".to_string()],
+            ..Default::default()
+        });
+        done_resources.insert("b".to_string(), ResourceInState {
+            resource_name: "b".to_string(),
+            depends_on: vec!["c".to_string()],
+            ..Default::default()
+        });
+        let trs = [a];
+        let current = &trs[0];
+        // A depends on B
+        // B depends on C
+        // C depends on D
+        // D depends on nothing
+        // A is the only resource thats being transitioned
+        // all of the other ones are done (no update necessary since their input hasnt changed)
+        // we should still successfully get the transient deps of A to be [B, C, D]
+        let mut deps = get_all_transient_dependencies(&done_resources, current, &trs).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps, ["b", "c", "d"]);
     }
 
     #[test]
@@ -2427,5 +2476,70 @@ resource some_template(B)
         let resource_b_tr = trs.remove(0);
         assert_eq!(resource_b_tr.get_resource_name(), "B");
         assert_eq!(resource_b_tr.is_update(), true);
+    }
+
+    #[tokio::test]
+    async fn dependency_map_update_works_for_already_done_resources() {
+        let document = r#"
+template aws_s3_bucket
+  create
+    echo hi
+  update
+    echo hi
+
+template aws_iam_policy
+  create
+    echo bye
+  update
+    echo bye
+
+resource aws_iam_policy(my_policy)
+  {
+    "policy": $.my_s3_bucket.input.bucket
+  }
+
+resource aws_s3_bucket(my_s3_bucket)
+  {
+    "bucket": "xyz"
+  }
+"#;
+        let state = StateFile::default();
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        // we run deploy once on an empty state and it works fine
+        let state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        assert_eq!(logger.get_logs(), vec!["creating 'my_s3_bucket'", "resource 'my_s3_bucket' OK", "creating 'my_policy'", "resource 'my_policy' OK"]);
+        // but now we update the dcl, and resource "my_policy" points to the output, rather than the input of "my_s3_bucket"
+        let document = r#"
+template aws_s3_bucket
+  create
+    echo hi
+  update
+    echo hi
+
+template aws_iam_policy
+  create
+    echo bye
+  update
+    echo bye
+
+resource aws_iam_policy(my_policy)
+  {
+    "policy": $.my_s3_bucket.output
+  }
+
+resource aws_s3_bucket(my_s3_bucket)
+  {
+    "bucket": "xyz"
+  }
+"#;
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        // this should still succeed but should only update my_policy
+        let logger = VecLogger::leaked();
+        let state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        assert!(state.resources.contains_key("my_policy"));
+        assert!(state.resources.contains_key("my_s3_bucket"));
+        assert_eq!(logger.get_logs(), vec!["updating 'my_policy'", "resource 'my_policy' OK"]);
     }
 }
