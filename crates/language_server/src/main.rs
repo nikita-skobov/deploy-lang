@@ -197,6 +197,11 @@ pub fn handle_template_jsonpath_completion_request<'a>(
         // we dont know the shape of anything beyond the initial known prefix
         return Some(vec![])
     }
+    let completions = input_output_accum_name_completions();
+    Some(completions)
+}
+
+pub fn input_output_accum_name_completions() -> Vec<CompletionItem> {
     let mut completions = Vec::with_capacity(4);
     completions.push(CompletionItem {
         label: "accum".to_string(),
@@ -246,7 +251,7 @@ referencing values between commands, that must be done via `$.accum` not `$.outp
         })),
         ..Default::default()
     });
-    Some(completions)
+    completions
 }
 
 pub fn handle_resource_jsonpath_completion_request<'a>(
@@ -267,26 +272,65 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
             let _ = dcl_language::parse::resource::parse_resource_section(&mut dcl, section);
         }
     }
-    // now create a json object from all of the resources that were found:
-    // TODO: need to consider performance here...
-    // might want to process the first segment in the json path out-of-band
-    // to look up the resource, and then use json path query on its input
-    let mut resource_inputs = serde_json::Map::new();
-    for resource in dcl.resources.iter() {
-        let val = resource.input.clone().to_serde_json_value();
-        resource_inputs.insert(resource.resource_name.s.clone(), val);
+    let resource_name = match json_path_query.segments.first() {
+        Some(_) if json_path_query.segments.len() == 1 => {
+            // TODO: there may be cases in the future where it matters what the
+            // first segment is! for now, resources can only refer to other resources so
+            // we assume its referencing a valid resource, and therefore
+            // the only valid completions are input/output/accum/name
+            //
+            // there's only one json path query segment, that means
+            // recommend input/output/accum/name:
+            return Some(input_output_accum_name_completions());
+        }
+        None => {
+            // if there's no segments, simply give recommendation of all the other resource names:
+            let completions = get_completion_from_keys(original_pos, dcl.resources.iter().map(|x| &x.resource_name.s));
+            return Some(completions);
+        }
+        // more than 1 segments. fall through to try to dynamically look up the input field
+        // from the resource of interest
+        Some(x) => {
+            x.to_string()
+        }
+    };
+    // now we know we're referencing a resource, check that the 2nd segment is "input"
+    // otherwise, we cannot give completions for output/accum because we're not looking up the state to
+    // be able to access their fields
+    // TODO: in the future might wish to offer completions for output! can be very useful when the state is a local file...
+    //
+    // ensure the first segment is referencing a valid resource:
+    let resource = dcl.resources.iter().find(|x| x.resource_name.s == resource_name)?;
+    // ensure the 2nd segment is referencing input
+    let second_segment = json_path_query.segments.get(1)?;
+    if second_segment.to_string() != "input" {
+        return None;
     }
-    let all_resource_inputs = serde_json::Value::Object(resource_inputs);
-
+    // need to convert to a serde json value. any json paths simply replace with null
+    let resource_input_val = resource.input.to_serde_json_value_with_replace_func(&mut |_| {
+        Ok(serde_json::Value::Null)
+    }).ok()?;
+    // now simply do a json path lookup using the remaining segments
+    // on the input of this resource
+    let remaining_segments = json_path_query.segments.get(2..)?.to_vec();
+    let jpq = jsonpath_rust::parser::model::JpQuery { segments: remaining_segments };
     let mut res = jsonpath_rust::query::js_path_process(
-        &json_path_query, &all_resource_inputs
+        &jpq, &resource_input_val
     ).ok()?;
     let last = res.pop()?;
     let val = last.val();
     let map = val.as_object()?;
     // return all keys of the object as valid completion items:
-    let mut completions = Vec::with_capacity(map.len());
-    for key in map.keys() {
+    let completions = get_completion_from_keys(original_pos, map.keys());
+    Some(completions)
+}
+
+pub fn get_completion_from_keys<'a>(
+    original_pos: Position,
+    keys: impl Iterator<Item = &'a String>,
+) -> Vec<CompletionItem> {
+    let mut completions = vec![];
+    for key in keys {
         let mut completion_text_edit = None;
         let mut additional_text_edits = None;
         if key.contains(' ') {
@@ -311,13 +355,13 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
             }]);
         }
         completions.push(CompletionItem {
-            label: key.clone(),
+            label: key.to_string(),
             text_edit: completion_text_edit,
             additional_text_edits,
             ..Default::default()
         });
     }
-    Some(completions)
+    completions
 }
 
 pub fn handle_completion_request<'a>(
@@ -601,10 +645,12 @@ mod test {
         let completion_request_line = 1;
         let completion_request_column = 21;
         let other_completion_column = 36;
+        let other_input_completion_column = 42;
         // $. at column 21
         // $.other_resource. at column 36
+        // #.other_resource.input. at column 42
         let document = r#"resource some_template(a)
-   {"a": "b", "c": $.other_resource.}
+   {"a": "b", "c": $.other_resource.input.}
 
 resource some_template(other_resource)
   {"option1": null, "option2": null}
@@ -620,8 +666,19 @@ resource some_template(other_resource)
         assert_eq!(res.len(), 1);
         assert_eq!(res.remove(0).label, "other_resource");
 
-        // the column is at $.other_resource. so it should recommend fields within other_resource
+        // the column is at $.other_resource. so it should recommend input/output/name/accum
         let params = completion_params_with_position(completion_request_line, other_completion_column);
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 4);
+        res.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(res.remove(0).label, "accum");
+        assert_eq!(res.remove(0).label, "input");
+        assert_eq!(res.remove(0).label, "name");
+        assert_eq!(res.remove(0).label, "output");
+
+        // the column is at $.other_resource.input.
+        // it should give option1/option2
+        let params = completion_params_with_position(completion_request_line, other_input_completion_column);
         let mut res = handle_completion_request_ex(params, &parsed).unwrap();
         assert_eq!(res.len(), 2);
         res.sort_by(|a, b| a.label.cmp(&b.label));
@@ -630,16 +687,61 @@ resource some_template(other_resource)
     }
 
     #[test]
-    fn json_path_completions_use_bracketed_syntax_if_theres_a_space() {
-        // $.other_resource. at column 36
+    fn should_not_provide_completions_for_json_path_output() {
+        let completion_request_line = 1;
+        let other_output_completion_column = 43;
+        // #.other_resource.output. at column 43
         let document = r#"resource some_template(a)
-   {"a": "b", "c": $.other_resource.}
+   {"a": "b", "c": $.other_resource.output.}
+
+resource some_template(other_resource)
+  {"option1": null, "option2": null}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, other_output_completion_column);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // we cannot give completion items for output of a resource since it may not exist/state
+        // may not necessarily be local
+        let res = handle_completion_request_ex(params, &parsed);
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn should_not_provide_completions_for_json_path_accum() {
+        let completion_request_line = 1;
+        let other_accum_completion_column = 42;
+        // #.other_resource.accum. at column 42
+        let document = r#"resource some_template(a)
+   {"a": "b", "c": $.other_resource.accum.}
+
+resource some_template(other_resource)
+  {"option1": null, "option2": null}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, other_accum_completion_column);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // we cannot give completion items for accum of a resource since its ephemeral. only exists during deploy
+        let res = handle_completion_request_ex(params, &parsed);
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn json_path_completions_use_bracketed_syntax_if_theres_a_space() {
+        // $.other_resource. at column 42
+        let document = r#"resource some_template(a)
+   {"a": "b", "c": $.other_resource.input.}
 
 resource some_template(other_resource)
   {"opti on1": null}
 "#.to_string();
         let (_, sections) = split_sections_with_logger(&document, ());
-        let params = completion_params_with_position(1, 36);
+        let params = completion_params_with_position(1, 42);
         let parsed = ParsedDoc {
             doc: &document,
             parsed: sections,
