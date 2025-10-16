@@ -85,7 +85,7 @@ pub enum Directive {
     /// requires that the value the query resolves to must be different
     /// than the same value from the last time this resource was transitioned.
     /// authors can specify multiple queries in one directives optionally by placing them in a json array
-    /// such as [$.a, $.b], which are ANDed together.
+    /// such as `[$.a, $.b]`, which are ANDed together.
     /// multiple diff and same directives are ORed together
     /// eg if an author specifies 
     /// 
