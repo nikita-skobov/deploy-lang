@@ -181,25 +181,60 @@ pub fn get_transitionable_resources(
 ) -> Vec<TransitionableResource> {
     // first collect the known resources that are to be created or updated:
     let mut out = Vec::with_capacity(state.resources.len());
+    let mut potentially_done_updates = vec![];
     let mut done_resources = HashMap::new();
     for resource in dcl.resources.drain(..) {
         match state.resources.remove(&resource.resource_name.s) {
             Some(state_entry) => {
                 // if we can determine this resource has not changed, then we can omit it
                 // from the transitionable resources:
-                if resource_input_has_been_changed(&resource, &state_entry) {
-                    out.push(TransitionableResource::Update { state_entry, current_entry: resource });
-                } else {
-                    // otherwise its input has not changed, dont add it to the
-                    // list of transitionable resources. instead, treat it as
-                    // done so other resources can read its output
-                    done_resources.insert(state_entry.resource_name.clone(), state_entry);
+                match resource_input_has_been_changed(&resource, &state_entry) {
+                    Some(true) => {
+                        // its input has changed since last deploy, it needs to be updated
+                        out.push(TransitionableResource::Update { state_entry, current_entry: resource })
+                    },
+                    Some(false) => {
+                        // its input has not changed, dont add it to the
+                        // list of transitionable resources. instead, treat it as
+                        // done so other resources can read its output
+                        done_resources.insert(state_entry.resource_name.clone(), state_entry);
+                    },
+                    None => {
+                        // its unknown if this resource will be updated since it references other resources dynamically
+                        // we temporarily add it to "potentially_done_updates" and later
+                        // check all of its references to see if they are done, and we can then update this value to check if
+                        // its trully a transitionable update, or perhaps its already done
+                        potentially_done_updates.push((state_entry, resource));
+                    },
                 }
             }
             None => {
                 // this resource is to be created since there's no corresponding state entry
                 out.push(TransitionableResource::Create { current_entry: resource });
             }
+        }
+    }
+    // check all of the potentially done updates and for any update that has all of its dependencies already done
+    // we can remove it from transitionable updates and mark it as done now
+    for (state_entry, current_entry) in potentially_done_updates {
+        let resolved_input = match resolve_current_input_value(&current_entry.input, current_entry.resource_name.as_str(), &done_resources) {
+            Ok(v) => v,
+            Err(_) => {
+                // if we for some reason fail to lookup the immediate deps
+                // or its not done yet, we can simply treat this as an updateable resource.
+                // later, once its dependencies finish, we will try to resolve the input again
+                // where it might succeed, or if it fails then we'll error. but for now we cannot know
+                // if this is done yet or not
+                out.push(TransitionableResource::Update { state_entry, current_entry });
+                continue;
+            }
+        };
+        // we were able to get its current input, now check if it differs from the last time it was deployed
+        // if not, we can treat this as already done
+        if resolved_input == state_entry.last_input {
+            done_resources.insert(current_entry.resource_name.s, state_entry);
+        } else {
+            out.push(TransitionableResource::Update { state_entry, current_entry });
         }
     }
     // now, check all of the resources in the state file that do not have corresponding
@@ -213,19 +248,13 @@ pub fn get_transitionable_resources(
     out
 }
 
-/// returns true if:
-/// - the current resource has a json path
-/// - or if the current resoure can be represented as serde_json::Value and it differs from the previous state entry
-pub fn resource_input_has_been_changed(current: &ResourceSection, previous: &ResourceInState) -> bool {
-    let current_input = match current.input.to_serde_json_value_pure() {
-        Some(v) => v,
-        None => {
-            // current input has json paths, return true
-            // since we cant know if it has changed or not yet
-            return true
-        }
-    };
-    return current_input != previous.last_input
+/// returns None if we cannot know if the input has changed due to
+/// the current input referencing json paths.
+/// returns Some(true) if the current input != the last input
+/// returns Some(false) if the current input has unchanged since the last input
+pub fn resource_input_has_been_changed(current: &ResourceSection, previous: &ResourceInState) -> Option<bool> {
+    let current_input = current.input.to_serde_json_value_pure()?;
+    return Some(current_input != previous.last_input)
 }
 
 pub fn match_resources_with_template(mut transitionable: Vec<TransitionableResource>, dcl: &DclFile) -> Result<Vec<TrWithTemplate>, String> {
@@ -264,30 +293,34 @@ the following are your options, in order from most recommended to least recommen
     Ok(out)
 }
 
+pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) -> Result<Vec<String>, String> {
+    // TODO: parse and extract just the first segment
+    let all_json_paths = current_entry.input.get_all_json_paths();
+    let num_json_paths = all_json_paths.len();
+    let json_paths = all_json_paths
+        .iter()
+        // we ignore errors here, only returning the successfully parsed json paths
+        // because that validation should have happened already by the dcl_language crate
+        .filter_map(|x| jsonpath_rust::parser::parse_json_path(&x.s).ok());
+    let mut out = Vec::with_capacity(num_json_paths);
+    for jpq in json_paths {
+        let resource_name = jpq.segments.first().ok_or_else(|| {
+            format!("json path for resource '{}' does not reference any resource", current_entry.resource_name)
+        })?;
+        let tr_name = current_entry.resource_name.as_str();
+        let resource_name = get_resource_name_from_segment(tr_name, resource_name)?;
+        out.push(resource_name);
+    }
+    Ok(out)
+}
+
 /// returns a list of dependencies that are immediate: this current resource depends on resource A, B, C, ...
 /// dependencies are other resource names from json paths that are referenced by this current resource in its input json
 pub fn get_immediate_dependencies(current: &TrWithTemplate) -> Result<Vec<String>, String> {
     let mut immediate_deps = match &current.tr {
         TransitionableResource::Create { current_entry } |
         TransitionableResource::Update { current_entry, .. } => {
-            // TODO: parse and extract just the first segment
-            let all_json_paths = current_entry.input.get_all_json_paths();
-            let num_json_paths = all_json_paths.len();
-            let json_paths = all_json_paths
-                .iter()
-                // we ignore errors here, only returning the successfully parsed json paths
-                // because that validation should have happened already by the dcl_language crate
-                .filter_map(|x| jsonpath_rust::parser::parse_json_path(&x.s).ok());
-            let mut out = Vec::with_capacity(num_json_paths);
-            for jpq in json_paths {
-                let resource_name = jpq.segments.first().ok_or_else(|| {
-                    format!("json path for resource '{}' does not reference any resource", current_entry.resource_name)
-                })?;
-                let tr_name = current_entry.resource_name.as_str();
-                let resource_name = get_resource_name_from_segment(tr_name, resource_name)?;
-                out.push(resource_name);
-            }
-            out
+            get_immediate_deps_from_current_entry(current_entry)?
         }
         TransitionableResource::Delete { state_entry } => state_entry.depends_on.clone(),
     };
@@ -650,6 +683,55 @@ pub fn process_json_path_query(jpq: &JpQuery, val: &serde_json::Value) -> Result
     return Ok(res.drain(..).map(|x| x.val().clone()).collect())
 }
 
+pub fn resolve_current_input_value(
+    current_json: &json_with_positions::Value,
+    current_resource_name: &str,
+    done_resources: &HashMap<String, ResourceInState>
+) -> Result<serde_json::Value, String> {
+    current_json.to_serde_json_value_with_replace_func(&mut |s| {
+        let mut jpq = jsonpath_rust::parser::parse_json_path(s)
+            .map_err(|e| format!(
+                "cannot create/update resource '{}'. invalid json path string '{}' error: {:?}",
+                current_resource_name, s, e
+            ))?;
+        // the first segment in the query should correspond to an existing resource in the state file
+        let first_seg = if jpq.segments.len() == 0 {
+            return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference anything", current_resource_name, s));
+        } else {
+            jpq.segments.remove(0)
+        };
+        let resource_name = get_resource_name_from_segment(current_resource_name, &first_seg)?;
+        let resource = done_resources.get(&resource_name).ok_or_else(|| format!("cannot create/update resource '{}'. json path references '{}' but this resource does not exist in state", current_resource_name, resource_name))?;
+        let next_seg = if jpq.segments.len() == 0 {
+            return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference input or output of resource '{}'", current_resource_name, s, resource_name))
+        } else {
+            jpq.segments.remove(0)
+        };
+        let input_or_output = get_resource_name_from_segment(current_resource_name, &next_seg)?;
+        let value_to_lookup = match input_or_output.as_str() {
+            "input" => &resource.last_input,
+            "output" => &resource.output,
+            "name" => return Ok(serde_json::Value::String(resource_name)),
+            x => return Err(format!("cannot create/update resource '{}'. json path string '{}' after resource name '{}' must be 'input', 'output', or 'name'. instead found '{}'", current_resource_name, s, resource_name, x))
+        };
+        // now that we have removed the first few segments of the json path, we can use jsonpath_rust to
+        // query the serde value:
+        let mut result_vals = process_json_path_query(&jpq, value_to_lookup).map_err(|e| {
+            format!("cannot create/update resource '{}'. json path string '{}' error: {}", current_resource_name, s, e)
+        })?;
+        // if the value looked up was a single value, use it as a single value
+        let val = if result_vals.len() == 1 {
+            result_vals.pop().unwrap_or_default()
+        } else {
+            // otherwise user likely indeed wanted it to be an array:
+            let vals = result_vals;
+            serde_json::Value::Array(vals)
+        };
+
+        Ok(val)
+    })
+}
+
 /// process all of the json paths in this tr's current input
 /// and return a serde_json::Value representing its current input
 /// that will be passed to the deployment function.
@@ -662,49 +744,11 @@ pub fn prepare_tr_for_transition(
         TransitionableResource::Update { current_entry, .. } => &current_entry.input,
         TransitionableResource::Delete { state_entry } => return Ok(state_entry.last_input.clone())
     };
-    let current_input = current_json.to_serde_json_value_with_replace_func(&mut |s| {
-        let mut jpq = jsonpath_rust::parser::parse_json_path(s)
-            .map_err(|e| format!(
-                "cannot create/update resource '{}'. invalid json path string '{}' error: {:?}",
-                tr.tr.get_resource_name(), s, e
-            ))?;
-        // the first segment in the query should correspond to an existing resource in the state file
-        let first_seg = if jpq.segments.len() == 0 {
-            return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference anything", tr.tr.get_resource_name(), s));
-        } else {
-            jpq.segments.remove(0)
-        };
-        let resource_name = get_resource_name_from_segment(tr.tr.get_resource_name(), &first_seg)?;
-        // look it up in state
-        let resource = state.resources.get(&resource_name).ok_or_else(|| format!("cannot create/update resource '{}'. json path references '{}' but this resource does not exist in state", tr.tr.get_resource_name(), resource_name))?;
-        let next_seg = if jpq.segments.len() == 0 {
-            return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference input or output of resource '{}'", tr.tr.get_resource_name(), s, resource_name))
-        } else {
-            jpq.segments.remove(0)
-        };
-        let input_or_output = get_resource_name_from_segment(tr.tr.get_resource_name(), &next_seg)?;
-        let value_to_lookup = match input_or_output.as_str() {
-            "input" => &resource.last_input,
-            "output" => &resource.output,
-            "name" => return Ok(serde_json::Value::String(resource_name)),
-            x => return Err(format!("cannot create/update resource '{}'. json path string '{}' after resource name '{}' must be 'input', 'output', or 'name'. instead found '{}'", tr.tr.get_resource_name(), s, resource_name, x))
-        };
-        // now that we have removed the first few segments of the json path, we can use jsonpath_rust to
-        // query the serde value:
-        let mut result_vals = process_json_path_query(&jpq, value_to_lookup).map_err(|e| {
-            format!("cannot create/update resource '{}'. json path string '{}' error: {}", tr.tr.get_resource_name(), s, e)
-        })?;
-        // if the value looked up was a single value, use it as a single value
-        let val = if result_vals.len() == 1 {
-            result_vals.pop().unwrap_or_default()
-        } else {
-            // otherwise user likely indeed wanted it to be an array:
-            let vals = result_vals;
-            serde_json::Value::Array(vals)
-        };
-
-        Ok(val)
-    })?;
+    let current_input = resolve_current_input_value(
+        current_json,
+        tr.tr.get_resource_name(),
+        &state.resources
+    )?;
 
     Ok(current_input)
 }
@@ -2298,5 +2342,90 @@ template xyz
         assert_eq!(out_state.resources.len(), 0);
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["deleting 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[test]
+    fn get_transitionable_resources_can_check_for_already_done_updates() {
+        // some resources depend on other resources, and we treat them as being updated (if they had prior
+        // state entries) since we cannot know if the input has changed ahead of time.
+        // this is the general case, but there's a special case which is when resource A depends on resource B
+        // but resource B is already done and doesnt need to be updated. in such a case, we should return
+        // no transitionable resources
+
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"x": $.A.output}
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // both A and B were already in state:
+        for resource_name in ["A", "B"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            if resource_name == "B" {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            } else {
+                resource.output = serde_json::json!("hello");
+                resource.last_input = serde_json::json!({});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        // should be empty because resource B depends on A, but A doesnt need to be updated, and therefore
+        // its value is the same
+        let trs = get_transitionable_resources(&mut state, &mut dcl);
+        assert!(trs.is_empty());
+    }
+
+    #[test]
+    fn get_transitionable_resources_can_check_for_already_done_updates_and_still_cause_update() {
+        // same situation as above test, but the input actually does differ
+        // and thus we should consider B an update
+
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"y": $.A.output}
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // both A and B were already in state:
+        for resource_name in ["A", "B"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            if resource_name == "B" {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            } else {
+                resource.output = serde_json::json!("hello");
+                resource.last_input = serde_json::json!({});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        // should cause an update because B's current input is {"y": "hello"}
+        // and its last input was {"x": "hello"}. we still had to look up resource A
+        // to be able to do this comparison.
+        // TODO: mini optimization here is before doing the expensive lookup, try to check if
+        // B's keys are all the same
+        let mut trs = get_transitionable_resources(&mut state, &mut dcl);
+        assert_eq!(trs.len(), 1);
+        let resource_b_tr = trs.remove(0);
+        assert_eq!(resource_b_tr.get_resource_name(), "B");
+        assert_eq!(resource_b_tr.is_update(), true);
     }
 }
