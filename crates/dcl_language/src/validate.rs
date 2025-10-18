@@ -1,15 +1,29 @@
 //! module for the various validations that should happen to a DclFile once it has been successfully parsed
 
 use jsonpath_rust::query::{state::State, Query};
-use str_at_line::StringAtLine;
+use str_at_line::{SpannedStr, StringAtLine};
 
 use crate::{parse::{resource::ResourceSection, SpannedDiagnostic}, DclFile};
+
+const RESERVED_KEYWORDS: &[&str] = &[
+    "input",
+    "output",
+    "name",
+    "accum"
+];
 
 pub fn validate_dcl_file(dcl: &DclFile) -> Vec<SpannedDiagnostic> {
     let mut diagnostics = vec![];
     validate_resources(dcl, &mut diagnostics);
     validate_functions(dcl, &mut diagnostics);
+    validate_templates(dcl, &mut diagnostics);
     diagnostics
+}
+
+pub fn validate_templates(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    for template in dcl.templates.iter() {
+        name_is_not_reserved(&template.template_name, "template", diagnostics);
+    }
 }
 
 pub fn validate_functions(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
@@ -20,9 +34,18 @@ pub fn validate_functions(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic
         if function.function_name.s.is_empty() {
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("function name cannot be empty")));
         }
+        name_is_not_reserved(&function.function_name, "function", diagnostics);
         if let Some(r) = dcl.resources.iter().find(|x| x.resource_name.as_str() == function.function_name.as_str()) {
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_name, format!("cannot name a function the same name as a resource. found resource '{}' with same name as this function", r.resource_name.as_str())));
         }
+    }
+}
+
+pub fn name_is_not_reserved<S: SpannedStr>(name: S, typ: &str, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    if RESERVED_KEYWORDS.iter().any(|k| *k == name.get_str()) {
+        diagnostics.push(SpannedDiagnostic::from_str_at_line(name, format!("{} name cannot be one of reserved keywords {:?}", typ, RESERVED_KEYWORDS)));
+    } else if name.get_str().starts_with("__priv") {
+        diagnostics.push(SpannedDiagnostic::from_str_at_line(name, format!("{} name cannot start with __priv", typ)));
     }
 }
 
@@ -30,6 +53,7 @@ pub fn validate_resources(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic
     for resource in dcl.resources.iter() {
         resource_has_corresponding_template(resource, dcl, diagnostics);
         resource_has_valid_jsonpath_references(resource, dcl, diagnostics);
+        name_is_not_reserved(&resource.resource_name, "resource", diagnostics);
     }
 }
 
@@ -661,5 +685,77 @@ resource my_template(myfunc)
         let first_err = source_errors.remove(0);
         assert_eq!(first_err.0, "cannot name a function the same name as a resource. found resource 'myfunc' with same name as this function");
         assert_eq!(first_err.1, "myfunc");
+    }
+
+    #[test]
+    fn invalid_template_name() {
+        let file = r#"
+template input
+  create
+    echo hi
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        assert_eq!(source_errors.len(), 1);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "template name cannot be one of reserved keywords [\"input\", \"output\", \"name\", \"accum\"]");
+        assert_eq!(first_err.1, "input");
+    }
+
+    #[test]
+    fn invalid_resource_name() {
+        let file = r#"
+template some_template
+  create
+    echo hi
+
+resource some_template(output)
+    {}
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        assert_eq!(source_errors.len(), 1);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "resource name cannot be one of reserved keywords [\"input\", \"output\", \"name\", \"accum\"]");
+        assert_eq!(first_err.1, "output");
+    }
+
+    #[test]
+    fn invalid_resource_name_cant_start_with_priv() {
+        let file = r#"
+template some_template
+  create
+    echo hi
+
+resource some_template(__priv_something)
+    {}
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        assert_eq!(source_errors.len(), 1);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "resource name cannot start with __priv");
+        assert_eq!(first_err.1, "__priv_something");
+    }
+
+    #[test]
+    fn invalid_function_name() {
+        let file = r#"
+template some_template
+  create
+    echo hi
+
+resource some_template(r1)
+    {}
+
+function javascript(name)
+  console.log(1);
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        assert_eq!(source_errors.len(), 1);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "function name cannot be one of reserved keywords [\"input\", \"output\", \"name\", \"accum\"]");
+        assert_eq!(first_err.1, "name");
     }
 }
