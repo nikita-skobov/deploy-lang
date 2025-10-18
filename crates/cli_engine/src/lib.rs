@@ -263,10 +263,15 @@ pub fn get_transitionable_resources(
 /// of the function call output
 pub fn insert_function_resources(
     dcl: &DclFile,
+    state: &StateFile,
     out: &mut Vec<TransitionableResource>,
 ) -> Result<(), String> {
     let mut fake_resources: Vec<ResourceSection> = vec![];
-    let all_tr_names: Vec<String> = out.iter().map(|x| x.get_resource_name().to_string()).collect();
+    let mut all_resource_names: Vec<String> = out.iter().map(|x| x.get_resource_name().to_string()).collect();
+    for (done_resource, _) in state.resources.iter() {
+        all_resource_names.push(done_resource.clone());
+    }
+    all_resource_names.dedup();
     for tr in out.iter_mut() {
         let input = match tr {
             TransitionableResource::Create { current_entry } |
@@ -287,7 +292,7 @@ pub fn insert_function_resources(
                     .ok_or("function call must be followed by resource to be passed into said function")?;
                 let mut resource_arg = resource_arg.to_string();
                 unquote_bracketed_selector(&mut resource_arg);
-                if all_tr_names.iter().find(|r| *r == &resource_arg).is_none() {
+                if all_resource_names.iter().find(|r| *r == &resource_arg).is_none() {
                     return Err(format!("failed to find resource to pass into function"));
                 }
                 // create a new resource that will be running this function:
@@ -621,7 +626,7 @@ pub async fn perform_update(
     // any resources that dont need to be updated
     let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
     // add fake resources that will correspond to the output of function calls:
-    insert_function_resources(&dcl, &mut transitionable_resources)?;
+    insert_function_resources(&dcl, &state,&mut transitionable_resources)?;
     // next, ensure every resource can be matched with a template. error otherwise:
     let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
     // ensure every resource to be transitioned *can* be transitioned before starting any tasks:
@@ -2732,7 +2737,7 @@ resource hello(r1)
         let mut state = StateFile::default();
         let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
         assert_eq!(transitionable_resources.len(), 1);
-        insert_function_resources(&dcl, &mut transitionable_resources).unwrap();
+        insert_function_resources(&dcl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 1);
     }
 
@@ -2756,8 +2761,50 @@ resource hello(r1)
         let mut state = StateFile::default();
         let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
         assert_eq!(transitionable_resources.len(), 2);
-        insert_function_resources(&dcl, &mut transitionable_resources).unwrap();
+        insert_function_resources(&dcl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 3);
+        let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
+        assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
+            assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
+            let val = current_entry.input.clone().to_serde_json_value();
+            assert_eq!(val, serde_json::json!({
+                "depends_on": { "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r2" },
+                "function_name": "myfunc",
+                "function_type": "javascript",
+                "function_body": "console.log(1);"
+            }));
+        });
+    }
+
+    #[test]
+    fn can_add_fake_resources_for_fn_calls_with_update() {
+        let document = r#"
+template hello
+  create
+    echo hi
+
+resource hello(r2)
+    {}
+
+function javascript(myfunc)
+  console.log(1);
+
+resource hello(r1)
+    {"a": $.myfunc['r2']}
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        // r2 already exists in state and has not changed:
+        state.resources.insert("r2".to_string(), ResourceInState {
+            resource_name: "r2".to_string(),
+            template_name: "hello".to_string(),
+            last_input: serde_json::json!({}),
+            ..Default::default()
+        });
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        assert_eq!(transitionable_resources.len(), 1);
+        insert_function_resources(&dcl, &state, &mut transitionable_resources).unwrap();
+        assert_eq!(transitionable_resources.len(), 2);
         let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
         assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
             assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
@@ -2796,7 +2843,7 @@ resource hello(r2)
         let mut state = StateFile::default();
         let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
         assert_eq!(transitionable_resources.len(), 3);
-        insert_function_resources(&dcl, &mut transitionable_resources).unwrap();
+        insert_function_resources(&dcl, &state,&mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 4);
         let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
         assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
