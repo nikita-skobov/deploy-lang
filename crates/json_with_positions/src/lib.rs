@@ -32,6 +32,12 @@ impl Value {
     ) -> Result<serde_json::Value, String> {
         convert_to_serde_value_recursively_with_replacement_func(self, replacement_func)
     }
+    pub fn to_value_with_replaced_json_paths(
+        self,
+        replace_cb: &mut impl FnMut(StringAtLine, Position) -> Result<Value, String>
+    ) -> Result<Value, String> {
+        replace_self_recursively(self, replace_cb)
+    }
     /// converts a value to a serde json value only if self has no JsonPaths.
     /// otherwise returns None
     pub fn to_serde_json_value_pure(&self) -> Option<serde_json::Value> {
@@ -131,6 +137,37 @@ pub fn has_a_path_query_key(json_obj: &serde_json::Value) -> bool {
             }
             false
         }
+    }
+}
+
+/// converts self into a new Value, replacing all json paths
+/// with a call to the replacement function which will return
+/// a new Value in its place, or error
+pub fn replace_self_recursively(
+    dynamic_json_val: Value,
+    replace_cb: &mut impl FnMut(StringAtLine, Position) -> Result<Value, String>
+) -> Result<Value, String> {
+    match dynamic_json_val {
+        Value::Array { val, pos } => {
+            let mut out = Vec::with_capacity(val.len());
+            for val in val {
+                out.push(replace_self_recursively(val, replace_cb)?);
+            }
+            Ok(Value::Array { pos, val: out })
+        }
+        Value::Object { val, pos } => {
+            let mut out = HashMap::with_capacity(val.len());
+            for (key, val) in val {
+                out.insert(key, replace_self_recursively(val, replace_cb)?);
+            }
+            Ok(Value::Object { pos, val: out })
+        }
+        Value::JsonPath { val, pos } => {
+            let val = replace_cb(val, pos)?;
+            Ok(val)
+        }
+        // all other values returned as-is, theres nothing to replace
+        x => Ok(x),
     }
 }
 
@@ -849,6 +886,26 @@ mod test {
     use assert_matches::assert_matches;
     use std::path::PathBuf;
     use super::*;
+
+    #[test]
+    fn can_replace_json_paths_in_place() {
+        let value = parse_json_value(r#"{"a": $.b}"#).unwrap();
+        assert_matches!(&value, Value::Object { val, .. } => {
+            assert!(val.contains_key("a"));
+            assert_matches!(&val["a"], Value::JsonPath { val, .. } => {
+                assert_eq!(val.s, "$.b");
+            });
+        });
+        let value = value.to_value_with_replaced_json_paths(&mut |_, _| {
+            Ok(Value::String { pos: Position::default(), val: StringAtLine { s: "ee".to_string(), line: 1, col: 1 } })
+        }).unwrap();
+        assert_matches!(&value, Value::Object { val, .. } => {
+            assert!(val.contains_key("a"));
+            assert_matches!(&val["a"], Value::String { val, .. } => {
+                assert_eq!(val.s, "ee");
+            });
+        });
+    }
 
     #[test]
     fn can_parse_json_path_query_solo() {
