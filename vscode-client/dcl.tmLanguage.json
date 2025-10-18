@@ -42,6 +42,20 @@
       ]
     },
     {
+      "begin": "^(function)\\s+(python)\\((\\w+)\\)",
+      "end": "^$",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.dcl" },
+        "2": { "name": "entity.name.function.dcl" },
+        "3": { "name": "variable.other.dcl" }
+      },
+      "patterns": [
+        {
+          "include": "source.python"
+        }
+      ]
+    },
+    {
       "begin": "^(template)(\\s)([^#]+)",
       "end": "^$",
       "beginCaptures": {
