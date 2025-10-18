@@ -42,7 +42,7 @@
       ]
     },
     {
-      "begin": "^(function)\\s+(python)\\((\\w+)\\)",
+      "begin": "^(function)\\s+(javascript)\\((\\w+)\\)",
       "end": "^$",
       "beginCaptures": {
         "1": { "name": "keyword.control.dcl" },
@@ -51,7 +51,7 @@
       },
       "patterns": [
         {
-          "include": "source.python"
+          "include": "source.ts"
         }
       ]
     },

@@ -7,26 +7,26 @@ import { CompletionList } from 'vscode';
 let client: LanguageClient;
 
 // dcl files have sections that are indentation based.
-// to determine if user is inside of a python function section that looks like
+// to determine if user is inside of a javascript function section that looks like
 //```
-//function python(func_name)
-//  print("in pythonn")
+//function javascript(func_name)
+//  print("in javascriptn")
 //```
 // simply iterate backwards until a line is found without leading whitespace
-// and check if the section header is "function" and if it contains "python"
-// if in a python function section returns a number that is the line
-// the python function starts at, -1 if not found
-function isInPythonFunctionSection(text: string, line: number): number {
+// and check if the section header is "function" and if it contains "javascript"
+// if in a javascript function section returns a number that is the line
+// the javascript function starts at, -1 if not found
+function isInJavascriptFunctionSection(text: string, line: number): number {
   const lines = text.split('\n');
   for (let i = line; i >= 0; i -= 1) {
     const lineText = lines.at(i);
     const firstChar = lineText?.charAt(0);
     if (firstChar != ' ' && firstChar != '\t') {
       // found a section
-      // return here true if its a python function section
+      // return here true if its a javascript function section
       // false otherwise
-      const isPythonFunction = lineText?.startsWith("function") && lineText.includes("python(");
-      if (isPythonFunction ?? false) {
+      const isJavascriptFunction = lineText?.startsWith("function") && lineText.includes("javascript(");
+      if (isJavascriptFunction ?? false) {
         return i;
       }
       return -1;
@@ -35,15 +35,15 @@ function isInPythonFunctionSection(text: string, line: number): number {
   return -1;
 }
 
-// given the line that the python function section starts at, return a string
-// containing the python body
-function extractPythonFunctionSection(text: string, line: number): string {
+// given the line that the javascript function section starts at, return a string
+// containing the javascript body
+function extractJavascriptFunctionSection(text: string, line: number): string {
   const lines = text.split('\n');
-  const pythonLines = [];
+  const javascriptLines = [];
   let num_whitespace_chars = 0;
   for (let i = 0; i < lines.length; i += 1) {
     if (i <= line) {
-      pythonLines.push('');
+      javascriptLines.push('');
       continue
     }
     const lineText = lines.at(i);
@@ -63,9 +63,9 @@ function extractPythonFunctionSection(text: string, line: number): string {
           break
         }
     }
-    pythonLines.push(lineText);
+    javascriptLines.push(lineText);
   }
-  return pythonLines.join("\n")
+  return javascriptLines.join("\n")
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -92,19 +92,21 @@ export function activate(context: vscode.ExtensionContext) {
     middleware: {
       provideCompletionItem: async (document, position, context, token, next) => {
         const text = document.getText();
-        const pythonSectionStartsAt = isInPythonFunctionSection(text, position.line);
-        if (pythonSectionStartsAt < 0) {
+        const javascriptSectionStartsAt = isInJavascriptFunctionSection(text, position.line);
+        if (javascriptSectionStartsAt < 0) {
           // route to the language server as normal
           return await next(document, position, context, token);
         }
-        const pythonText = extractPythonFunctionSection(text, pythonSectionStartsAt);
-        // if here: we're in a python function section, so make a forwarded request
-        // to the python language server
+        const javascriptText = extractJavascriptFunctionSection(text, javascriptSectionStartsAt);
+        // if here: we're in a javascript function section, so make a forwarded request
+        // to the typescript language server
+        // (we use typescript instead of javascript because we will benefit from extra type information
+        // such as the shape of input/output that javascript language server wouldnt be able to leverage)
         const originalUri = document.uri.toString(true);
-				virtualDocumentContents.set(originalUri, pythonText);
-				const vdocUriString = `embedded-content://python/${encodeURIComponent(
+				virtualDocumentContents.set(originalUri, javascriptText);
+				const vdocUriString = `embedded-content://typescript/${encodeURIComponent(
 					originalUri
-				)}.py`;
+				)}.ts`;
 				const vdocUri = vscode.Uri.parse(vdocUriString);
 				const stuff = position;
         const res = await vscode.commands.executeCommand<CompletionList>(
