@@ -2,7 +2,7 @@
 	"name": "dpl-language-server",
 	"description": "VSCode part of a language server",
 	"repository": {
-		"url": "https://github.com/nikita-skobov/declarative-cli"
+		"url": "https://github.com/nikita-skobov/deploylang"
 	},
 	"keywords": [
 		"dpl",

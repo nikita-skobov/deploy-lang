@@ -1,4 +1,4 @@
-//! a resource in declarative-cli is a json object (with optional settings [TODO]).
+//! a resource in deploylang is a json object (with optional settings [TODO]).
 //! this module defines the shape of a resource section
 
 use json_with_positions::{CharIterator, Value};

@@ -1,4 +1,4 @@
-//! state in declarative-cli is just a json object.
+//! state in deploylang is just a json object.
 //! this module defines the shape of the state section
 //! which defines how/where state is loaded
 
