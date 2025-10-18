@@ -1,11 +1,54 @@
-template lambda_fn
-  meta
-    always add endpoint-url
-  create
-    aws create-function
-    aws list-functions
-  update
-  delete
+# this example shows how to use dcl to create an s3 bucket and a
+# policy that allows getting any object in that s3 bucket
+# every update to the policy will update the policy in place, and set the new
+# policy as the default version, and delete the old version
+# this sample demonstrates:
+# - using a state section that keeps state in a file
+# - defining templates that have complex accumulator rules for updates
+# - using functions defined in other languages (see `s3_all_objects_arn`)
 
-resource lambda_fn(my_lambda_fn)
-  {}
+state
+  file mystate.json
+
+template aws_s3_bucket
+  create
+    aws s3api create-bucket
+      ... $.input
+
+template aws_iam_policy
+  create
+    aws iam create-policy
+      policy-name $.name
+      policy-document $.input
+  update
+    # adds the value of PolicyVersion.VersionId to the accumulator
+    @accum [$.accum.PolicyVersion.VersionId, $.Policy.DefaultVersionId]
+    aws iam create-policy-version --set-as-default
+      policy-arn $.output.Policy.Arn
+      policy-document $.input
+    @dropoutput
+    aws iam delete-policy-version
+      policy-arn $.output.Policy.Arn
+      version-id $.output.Policy.DefaultVersionId
+
+function javascript(s3_all_objects_arn)
+  return `arn:aws:s3:::${name}/*`
+
+resource aws_iam_policy(my_policy)
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject"
+        ],
+        "Resource": [$.s3_all_objects_arn['my_s3_bucket']] #dsadsa
+      }
+    ]
+  }
+
+resource aws_s3_bucket(my_s3_bucket)
+  {
+    "bucket": "blahblahbucket123h8tr"
+  }
