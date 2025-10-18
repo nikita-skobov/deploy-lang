@@ -110,6 +110,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "str_at_line",
  "tokio",
 ]
 

@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 json_with_positions = { workspace = true }
 jsonpath-rust = { workspace = true }
 log = { workspace = true }
+str_at_line = { workspace = true }
 
 [dev-dependencies]
 assert_matches = "1.5.0"

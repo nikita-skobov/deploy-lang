@@ -1,10 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
 use dcl_language::{parse::{resource::ResourceSection, template::TemplateSection, SpannedDiagnostic}, DclFile};
+use json_with_positions::Position;
 use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::State, Query}};
 use serde::{Deserialize, Serialize};
+use str_at_line::StringAtLine;
 
 pub mod run_template;
+pub mod run_function;
+
+/// during a deploy, if a resource references a function, we actually create a separate ephemeral resource
+/// for that function call, and it will have this prefix such that we dont accidentally
+/// add it to state afterwards, and such that users cant have conflicting resource names
+pub const FUNCTION_RESOURCE_PREFIX: &str = "__priv_internal_function_resource__";
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct StateFile {
@@ -248,6 +256,89 @@ pub fn get_transitionable_resources(
     out
 }
 
+/// given a list of resources to be transitioned, check all of their dynamic values
+/// for json path references to function calls. replace those references to be simple
+/// resource references such as '$.__fake_resource.output' where the fake resource
+/// is a new ephemeral resource we insert into the output vec whose output is the entire value
+/// of the function call output
+pub fn insert_function_resources(
+    dcl: &DclFile,
+    out: &mut Vec<TransitionableResource>,
+) -> Result<(), String> {
+    let mut fake_resources: Vec<ResourceSection> = vec![];
+    let all_tr_names: Vec<String> = out.iter().map(|x| x.get_resource_name().to_string()).collect();
+    for tr in out.iter_mut() {
+        let input = match tr {
+            TransitionableResource::Create { current_entry } |
+            TransitionableResource::Update { current_entry, .. } => &mut current_entry.input,
+            TransitionableResource::Delete { .. } => continue,
+        };
+        let inp = std::mem::replace(input, json_with_positions::Value::Null { pos: Default::default(), val: () });
+        let inp = inp.to_value_with_replaced_json_paths(&mut |s, pos| {
+            let jpq = jsonpath_rust::parser::parse_json_path(s.as_str())
+                .map_err(|e| format!("failed to parse json path '{}': {:?}", s, e))?;
+            // check if its a function call:
+            let first = jpq.segments.first()
+                .ok_or("json path must have at least 1 segment")?;
+            let mut fn_call_name = first.to_string();
+            unquote_bracketed_selector(&mut fn_call_name);
+            if let Some(func) = dcl.functions.iter().find(|x| &x.function_name.s == &fn_call_name) {
+                let resource_arg = jpq.segments.iter().nth(1)
+                    .ok_or("function call must be followed by resource to be passed into said function")?;
+                let mut resource_arg = resource_arg.to_string();
+                unquote_bracketed_selector(&mut resource_arg);
+                if all_tr_names.iter().find(|r| *r == &resource_arg).is_none() {
+                    return Err(format!("failed to find resource to pass into function"));
+                }
+                // create a new resource that will be running this function:
+                let mut map: HashMap<_, json_with_positions::Value> = HashMap::new();
+                let mut key = StringAtLine::default();
+                key.s = "function_name".to_string();
+                map.insert(key, json_with_positions::Value::String { pos: Position::default(), val: func.function_name.clone() });
+                let mut key = StringAtLine::default();
+                key.s = "function_type".to_string();
+                map.insert(key, json_with_positions::Value::String { pos: Position::default(), val: func.function_type.clone() });
+                let mut key = StringAtLine::default();
+                key.s = "function_body".to_string();
+                let mut val = StringAtLine::default();
+                val.s = func.get_body();
+                map.insert(key, json_with_positions::Value::String { pos: Position::default(), val });
+                let mut key = StringAtLine::default();
+                key.s = "depends_on".to_string();
+                map.insert(key, json_with_positions::parse_json_value(&format!("$.{}", resource_arg))?);
+                let fake_input = json_with_positions::Value::Object { pos: Position::default(), val: map };
+                let mut fake_resource = ResourceSection {
+                    resource_name: Default::default(),
+                    template_name: Default::default(),
+                    input: fake_input,
+                };
+                fake_resource.resource_name.s = format!("{}_{}_{}", FUNCTION_RESOURCE_PREFIX, func.function_name.as_str(), resource_arg);
+                fake_resource.template_name.s = FUNCTION_RESOURCE_PREFIX.to_string();
+                // replace the json path reference with a reference instead to the fake resource
+                // which will resolve to the value of the function output
+                let mut fake_json_path = s.clone();
+                fake_json_path.s = format!("$.{}.output", fake_resource.resource_name.s);
+                // dont add duplicates. this allows us to copy the same function call on the same resource
+                // instead of running the function multiple times for the same resource.
+                // this works as long as every function call to the resource X is always named consistently:
+                if fake_resources.iter().find(|x| x.resource_name.as_str() == fake_resource.resource_name.as_str()).is_none() {
+                    fake_resources.push(fake_resource);
+                }
+                Ok(json_with_positions::Value::JsonPath { pos, val: fake_json_path })
+            } else {
+                // its not a function, return the json path as it was:
+                Ok(json_with_positions::Value::JsonPath { pos, val: s })
+            }
+        })?;
+        *input = inp;
+    }
+    // finally, add all of the fake resources into the list of transitionable resources
+    for fake in fake_resources {
+        out.push(TransitionableResource::Create { current_entry: fake });
+    }
+    Ok(())
+}
+
 /// returns None if we cannot know if the input has changed due to
 /// the current input referencing json paths.
 /// returns Some(true) if the current input != the last input
@@ -263,6 +354,12 @@ pub fn match_resources_with_template(mut transitionable: Vec<TransitionableResou
         let template_name = tr.get_template_name()?;
         let resource_name = tr.get_resource_name();
         let is_delete = tr.is_delete();
+        if template_name == FUNCTION_RESOURCE_PREFIX {
+            // this is a fake, ephemeral resource, which doesnt correspond to a real
+            // template, add it to TrWithTemplate with a fake template:
+            out.push(TrWithTemplate { tr, template: TemplateSection::default() });
+            continue;
+        }
         let template = dcl.templates.iter()
             .find(|t| t.template_name == template_name)
             .ok_or_else(|| {
@@ -522,7 +619,9 @@ pub async fn perform_update(
 ) -> Result<StateFile, String> {
     // first, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
-    let transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+    let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+    // add fake resources that will correspond to the output of function calls:
+    insert_function_resources(&dcl, &mut transitionable_resources)?;
     // next, ensure every resource can be matched with a template. error otherwise:
     let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
     // ensure every resource to be transitioned *can* be transitioned before starting any tasks:
@@ -557,10 +656,17 @@ pub async fn perform_update_batch(
         let res = next.map_err(|e| format!("deployment task panicked: {:?}", e))?;
         // TODO: should 1 resource failure stop all other resources? for now it will...
         let res = res.map_err(|(resource_name, e)| {
-            log::error!(logger: logger, "resource '{}' failed to transition. error: {}", resource_name, e);
+            if !resource_name.starts_with(FUNCTION_RESOURCE_PREFIX) {
+                log::error!(logger: logger, "resource '{}' failed to transition. error: {}", resource_name, e);
+            }
             e
         })?;
-        log::info!(logger: logger, "resource '{}' OK", res.resource_name);
+        if res.template_name != FUNCTION_RESOURCE_PREFIX {
+            log::info!(logger: logger, "resource '{}' OK", res.resource_name);
+        } else {
+            let (fn_name, resource_name) = extract_fn_call_names(&res.resource_name).unwrap_or_default();
+            log::info!(logger: logger, "function call '{}({})' OK", fn_name, resource_name);
+        }
         // add this to the state, then look up all the resources that depend on this resource and try to
         // spawn tasks for any other resource that can be transitioned now
         let resource_name = res.resource_name.clone();
@@ -572,7 +678,27 @@ pub async fn perform_update_batch(
     if !batch.is_empty() {
         return Err(format!("{} resources were not transitioned: {:?}", batch.len(), batch.iter().map(|x| x.tr.get_resource_name()).collect::<Vec<_>>()))
     }
+    // remove all ephemeral resources from state. we had to insert them temporarily
+    // so their dependencies can run from their output shape
+    // but we dont want them in the final state:
+    state.resources.retain(|k, _| {
+        if k.starts_with(FUNCTION_RESOURCE_PREFIX) {
+            return false;
+        }
+        true
+    });
+    // finally, check all dependencies of the state resources and remove any that start with __priv
+    // we dont want those ephemeral dependencies to persist:
+    for (_, resource) in state.resources.iter_mut() {
+        resource.depends_on.retain(|d| !d.starts_with(FUNCTION_RESOURCE_PREFIX));
+    }
     Ok(())
+}
+
+pub fn extract_fn_call_names(resource_name: &str) -> Option<(&str, &str)> {
+    let (remaining, resource_name) = resource_name.rsplit_once("_")?;
+    let (_, function_name) = remaining.rsplit_once("_")?;
+    return Some((function_name, resource_name));
 }
 
 pub async fn perform_delete_batch(
@@ -714,6 +840,19 @@ pub fn resolve_current_input_value(
         };
         let resource_name = get_resource_name_from_segment(current_resource_name, &first_seg)?;
         let resource = done_resources.get(&resource_name).ok_or_else(|| format!("cannot create/update resource '{}'. json path references '{}' but this resource does not exist in state", current_resource_name, resource_name))?;
+        if current_resource_name.starts_with(FUNCTION_RESOURCE_PREFIX) {
+            // this is a function call resource, so dont perform any of the below validation
+            // the input value should be resolved to the entire input/output/name shape
+            // of the resource:
+            let name = resource.resource_name.clone();
+            let output = resource.output.clone();
+            let input = resource.last_input.clone();
+            return Ok(serde_json::json!({
+                "input": input,
+                "output": output,
+                "name": name,
+            }))
+        }
         let next_seg = if jpq.segments.len() == 0 {
             return Err(format!("cannot create/update resource '{}'. json path string '{}' does not reference input or output of resource '{}'", current_resource_name, s, resource_name))
         } else {
@@ -794,6 +933,20 @@ pub async fn transition_single(
     let TrWithTemplate { tr, template } = tr;
     match tr {
         TransitionableResource::Create { current_entry } => {
+            if current_entry.template_name.as_str() == FUNCTION_RESOURCE_PREFIX {
+                let output = run_function::run_function(
+                    logger,
+                    current_entry.resource_name.as_str(),
+                    current_input.clone(),
+                ).await.map_err(|e| (current_entry.resource_name.s.clone(), e))?;
+                return Ok(ResourceInState {
+                    resource_name: current_entry.resource_name.s,
+                    template_name: FUNCTION_RESOURCE_PREFIX.to_string(),
+                    last_input: current_input,
+                    output,
+                    depends_on,
+                })
+            }
             let output = run_template::run_template(
                 logger,
                 current_entry.resource_name.as_str(),
@@ -1465,6 +1618,28 @@ mod test {
         let tr = create_tr!("a"; r#"{"a": $.b}"#);
         let err = prepare_tr_for_transition(&tr, &state).expect_err("it should error");
         assert_eq!(err, "cannot create/update resource 'a'. json path string '$.b' does not reference input or output of resource 'b'");
+    }
+
+    #[test]
+    fn can_eval_json_paths_of_function_call_resources() {
+        let mut state = StateFile::default();
+        let resource = ResourceInState {
+            resource_name: "b".to_string(),
+            last_input: serde_json::json!({"b": "b"}),
+            output: serde_json::json!({ "hello": "world" }),
+            ..Default::default()
+        };
+        state.resources.insert("b".to_string(), resource);
+        // should resolve to the entire input/output/name shape of the resource b
+        let tr = create_tr!("__priv_internal_function_resource___myfunc_foo"; r#"{"a": $.b}"#);
+        let val = prepare_tr_for_transition(&tr, &state).expect("it should be valid because its resolving a function call");
+        assert_eq!(val, serde_json::json!({
+            "a": {
+                "input": { "b": "b"},
+                "output": { "hello": "world" },
+                "name": "b"
+            }
+        }));
     }
 
     #[test]
@@ -2541,5 +2716,217 @@ resource aws_s3_bucket(my_s3_bucket)
         assert!(state.resources.contains_key("my_policy"));
         assert!(state.resources.contains_key("my_s3_bucket"));
         assert_eq!(logger.get_logs(), vec!["updating 'my_policy'", "resource 'my_policy' OK"]);
+    }
+
+    #[test]
+    fn no_fake_resources_if_no_function_calls() {
+        let document = r#"
+template hello
+  create
+    echo hi
+
+resource hello(r1)
+    {}
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        assert_eq!(transitionable_resources.len(), 1);
+        insert_function_resources(&dcl, &mut transitionable_resources).unwrap();
+        assert_eq!(transitionable_resources.len(), 1);
+    }
+
+    #[test]
+    fn can_add_fake_resources_for_fn_calls() {
+        let document = r#"
+template hello
+  create
+    echo hi
+
+resource hello(r2)
+    {}
+
+function javascript(myfunc)
+  console.log(1);
+
+resource hello(r1)
+    {"a": $.myfunc['r2']}
+"#;
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        assert_eq!(transitionable_resources.len(), 2);
+        insert_function_resources(&dcl, &mut transitionable_resources).unwrap();
+        assert_eq!(transitionable_resources.len(), 3);
+        let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
+        assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
+            assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
+            let val = current_entry.input.clone().to_serde_json_value();
+            assert_eq!(val, serde_json::json!({
+                "depends_on": { "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r2" },
+                "function_name": "myfunc",
+                "function_type": "javascript",
+                "function_body": "console.log(1);"
+            }));
+        });
+    }
+
+    #[test]
+    fn duplicate_function_calls_treated_as_one_resource() {
+        let document = r#"
+template hello
+  create
+    echo hi
+
+resource hello(r3)
+    {}
+
+function javascript(myfunc)
+  console.log(1);
+
+resource hello(r1)
+    {"a": $.myfunc['r3']}
+
+resource hello(r2)
+    {"a": $.myfunc['r3']}
+"#;
+        // same as the above test, but this tests that if multiple resources call the same function
+        // with the same input resource, then that only creates 1 extra resource
+        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut state = StateFile::default();
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        assert_eq!(transitionable_resources.len(), 3);
+        insert_function_resources(&dcl, &mut transitionable_resources).unwrap();
+        assert_eq!(transitionable_resources.len(), 4);
+        let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
+        assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
+            assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
+            let val = current_entry.input.clone().to_serde_json_value();
+            assert_eq!(val, serde_json::json!({
+                "depends_on": { "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r3" },
+                "function_name": "myfunc",
+                "function_type": "javascript",
+                "function_body": "console.log(1);"
+            }));
+        });
+    }
+
+    #[tokio::test]
+    async fn can_run_resources_with_function_reference() {
+        let document = r#"
+template some_template
+  create
+    echo hi
+
+function javascript(myfunc)
+  return "eee"
+
+resource some_template(foo)
+  {
+    "foo": "foo"
+  }
+
+resource some_template(bar)
+  {
+    "bar": $.myfunc['foo']
+  }
+"#;
+        let state = StateFile::default();
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        // we run deploy once on an empty state and it works fine
+        let mut state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        assert_eq!(state.resources.len(), 2);
+        let foo = state.resources.remove("foo").unwrap();
+        assert_eq!(foo.last_input, serde_json::json!({"foo": "foo"}));
+        assert!(foo.depends_on.is_empty());
+        let bar = state.resources.remove("bar").unwrap();
+        // the bar field calls function 'myfunc' with the entire shape of resource 'foo'.
+        // the function 'myfunc' simply returns the string 'eee' so the value of
+        // the bar field should be 'eee'
+        assert_eq!(bar.last_input, serde_json::json!({"bar": "eee"}));
+        // it should depend on foo since it calls a function and passes foo in
+        assert_eq!(bar.depends_on, vec!["foo"]);
+        assert_eq!(logger.get_logs(), vec!["creating 'foo'", "resource 'foo' OK", "calling function 'myfunc(foo)'", "function call 'myfunc(foo)' OK", "creating 'bar'", "resource 'bar' OK"]);
+    }
+
+    #[tokio::test]
+    async fn can_run_resources_with_function_reference_manipulate_input() {
+        let document = r#"
+template some_template
+  create
+    echo hi
+
+function javascript(myfunc)
+  return input.foo;
+
+resource some_template(foo)
+  {
+    "foo": "foo2"
+  }
+
+resource some_template(bar)
+  {
+    "bar": $.myfunc['foo']
+  }
+"#;
+        let state = StateFile::default();
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        // we run deploy once on an empty state and it works fine
+        let mut state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        assert_eq!(state.resources.len(), 2);
+        let foo = state.resources.remove("foo").unwrap();
+        assert_eq!(foo.last_input, serde_json::json!({"foo": "foo2"}));
+        assert!(foo.depends_on.is_empty());
+        let bar = state.resources.remove("bar").unwrap();
+        // the bar field calls function 'myfunc' with the entire shape of resource 'foo'.
+        // the function 'myfunc' accesses the value of foo.input.foo
+        // which should resolve to "foo2"
+        assert_eq!(bar.last_input, serde_json::json!({"bar": "foo2"}));
+        // it should depend on foo since it calls a function and passes foo in
+        assert_eq!(bar.depends_on, vec!["foo"]);
+        assert_eq!(logger.get_logs(), vec!["creating 'foo'", "resource 'foo' OK", "calling function 'myfunc(foo)'", "function call 'myfunc(foo)' OK", "creating 'bar'", "resource 'bar' OK"]);
+    }
+
+    #[tokio::test]
+    async fn can_run_resources_with_function_reference_manipulate_advanced() {
+        let document = r#"
+template some_template
+  create
+    echo {}
+
+function javascript(myfunc)
+  return `${JSON.stringify(output)}${name}`
+
+resource some_template(foo)
+  {
+    "foo": "foo2"
+  }
+
+resource some_template(bar)
+  {
+    "bar": $.myfunc['foo']
+  }
+"#;
+        let state = StateFile::default();
+        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        // we run deploy once on an empty state and it works fine
+        let mut state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        assert_eq!(state.resources.len(), 2);
+        let foo = state.resources.remove("foo").unwrap();
+        assert_eq!(foo.last_input, serde_json::json!({"foo": "foo2"}));
+        assert!(foo.depends_on.is_empty());
+        let bar = state.resources.remove("bar").unwrap();
+        // the bar field calls function 'myfunc' with the entire shape of resource 'foo'.
+        // the function 'myfunc' simply concatenates the output of foo with the name 'foo'
+        assert_eq!(bar.last_input, serde_json::json!({"bar": "{}foo"}));
+        // it should depend on foo since it calls a function and passes foo in
+        assert_eq!(bar.depends_on, vec!["foo"]);
+        assert_eq!(logger.get_logs(), vec!["creating 'foo'", "resource 'foo' OK", "calling function 'myfunc(foo)'", "function call 'myfunc(foo)' OK", "creating 'bar'", "resource 'bar' OK"]);
     }
 }
