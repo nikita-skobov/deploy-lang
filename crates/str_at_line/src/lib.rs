@@ -80,9 +80,6 @@ impl SpannedStr for &StringAtLine {
 impl StringAtLine {
     pub fn pop(&mut self) -> Option<char> {
         let out = self.s.pop();
-        if out.is_some() {
-            self.col -= 1;
-        }
         out
     }
     pub fn as_str<'a>(&'a self) -> &'a str {
@@ -584,5 +581,18 @@ line3"#;
         assert_eq!(s, "🗻");
         assert_eq!(s.line, 1);
         assert_eq!(s.col, 2);
+    }
+
+    #[test]
+    fn pop_works() {
+        let mut s = StringAtLine {
+            s: "abcd".to_string(),
+            line: 1,
+            col: 4,
+        };
+        s.pop();
+        assert_eq!(s.as_str(), "abc");
+        assert_eq!(s.line, 1);
+        assert_eq!(s.col, 4);
     }
 }
