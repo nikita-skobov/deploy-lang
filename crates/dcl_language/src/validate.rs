@@ -20,6 +20,9 @@ pub fn validate_functions(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic
         if function.function_name.s.is_empty() {
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("function name cannot be empty")));
         }
+        if let Some(r) = dcl.resources.iter().find(|x| x.resource_name.as_str() == function.function_name.as_str()) {
+            diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_name, format!("cannot name a function the same name as a resource. found resource '{}' with same name as this function", r.resource_name.as_str())));
+        }
     }
 }
 
@@ -637,5 +640,26 @@ resource my_template(other)
         let first_err = source_errors.remove(0);
         assert_eq!(first_err.0, "resource 'other' cannot call function 'myfunc' with itself as the input");
         assert_eq!(first_err.1, "$.myfunc['other']");
+    }
+
+    #[test]
+    fn cannot_have_functions_with_same_name_as_resources() {
+        let file = r#"
+template my_template
+  create
+    echo hi
+
+function javascript(myfunc)
+  console.log(1);
+
+resource my_template(myfunc)
+    {}
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have diagnostic errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        assert_eq!(source_errors.len(), 1);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "cannot name a function the same name as a resource. found resource 'myfunc' with same name as this function");
+        assert_eq!(first_err.1, "myfunc");
     }
 }
