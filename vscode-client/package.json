@@ -42,10 +42,13 @@
 	"scripts": {
 		"compile": "tsc -b",
 		"build-rs": "cargo build -p language_server && cp ../target/debug/language_server ./out/",
-		"build-rs-release": "cargo build --release -p language_server && cp ../target/release/language_server ./out/",
+		"build-rs-release": "cross build --release -p language_server --target x86_64-unknown-linux-musl && cp ../target/x86_64-unknown-linux-musl/release/language_server ./out/",
+		"build-rs-release-win": "cross build --release -p language_server --target x86_64-pc-windows-gnu && cp ../target/x86_64-pc-windows-gnu/release/language_server.exe ./out/",
 		"build": "npm run compile && npm run build-rs",
 		"build-release": "npm run compile && npm run build-rs-release",
-		"package": "npm run build-release && vsce package"
+		"build-release-win": "npm run compile && npm run build-rs-release-win",
+		"package": "npm run build-release && vsce package",
+		"package-win": "npm run build-release-win && vsce package"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.13.0",
