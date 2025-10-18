@@ -2,3 +2,4 @@
 *.zip
 *.txt
 node_modules/
+*state.json
