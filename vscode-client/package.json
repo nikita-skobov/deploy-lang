@@ -40,7 +40,7 @@
 	},
 	"main": "./out/extension",
 	"scripts": {
-		"compile": "tsc -b",
+		"compile": "rm -rf ./out && tsc -b",
 		"build-rs": "cargo build -p language_server && cp ../target/debug/language_server ./out/",
 		"build-rs-release": "cross build --release -p language_server --target x86_64-unknown-linux-musl && cp ../target/x86_64-unknown-linux-musl/release/language_server ./out/",
 		"build-rs-release-win": "cross build --release -p language_server --target x86_64-pc-windows-gnu && cp ../target/x86_64-pc-windows-gnu/release/language_server.exe ./out/",
