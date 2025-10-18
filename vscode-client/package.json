@@ -1,14 +1,14 @@
 {
-	"name": "dcl-language-server",
+	"name": "dpl-language-server",
 	"description": "VSCode part of a language server",
 	"repository": {
 		"url": "https://github.com/nikita-skobov/declarative-cli"
 	},
 	"keywords": [
-		"dcl",
+		"dpl",
 		"language-server",
-		"dcl-language-server",
-		"dcl-lsp"
+		"dpl-language-server",
+		"dpl-lsp"
   	],
 	"license": "MIT",
 	"version": "0.0.1",
@@ -20,21 +20,21 @@
 		"vscode-languageclient": "^9.0.1"
 	},
 	"activationEvents": [
-		"workspaceContains:*.dcl"
+		"workspaceContains:*.dpl"
   	],
 	"contributes": {
 		"languages": [
 			{
-				"id": "dcl",
-				"extensions": [".dcl"],
+				"id": "dpl",
+				"extensions": [".dpl"],
 				"configuration": "./language-configuration.json"
 			}
 		],
 		"grammars": [
 			{
-				"language": "dcl",
-				"scopeName": "source.dcl",
-				"path": "dcl.tmLanguage.json"
+				"language": "dpl",
+				"scopeName": "source.dpl",
+				"path": "dpl.tmLanguage.json"
 			}
 		]
 	},

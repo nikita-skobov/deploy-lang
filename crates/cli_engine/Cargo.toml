@@ -8,7 +8,7 @@ edition.workspace = true
 hex = "0.4.3"
 hmac-sha256 = "1.1.12"
 tokio = { workspace = true }
-dcl_language = { workspace = true }
+deploy_language = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 json_with_positions = { workspace = true }

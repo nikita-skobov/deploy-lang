@@ -1,9 +1,9 @@
-//! module for the various validations that should happen to a DclFile once it has been successfully parsed
+//! module for the various validations that should happen to a DplFile once it has been successfully parsed
 
 use jsonpath_rust::query::{state::State, Query};
 use str_at_line::{SpannedStr, StringAtLine};
 
-use crate::{parse::{resource::ResourceSection, SpannedDiagnostic}, DclFile};
+use crate::{parse::{resource::ResourceSection, SpannedDiagnostic}, DplFile};
 
 const RESERVED_KEYWORDS: &[&str] = &[
     "input",
@@ -12,22 +12,22 @@ const RESERVED_KEYWORDS: &[&str] = &[
     "accum"
 ];
 
-pub fn validate_dcl_file(dcl: &DclFile) -> Vec<SpannedDiagnostic> {
+pub fn validate_dpl_file(dpl: &DplFile) -> Vec<SpannedDiagnostic> {
     let mut diagnostics = vec![];
-    validate_resources(dcl, &mut diagnostics);
-    validate_functions(dcl, &mut diagnostics);
-    validate_templates(dcl, &mut diagnostics);
+    validate_resources(dpl, &mut diagnostics);
+    validate_functions(dpl, &mut diagnostics);
+    validate_templates(dpl, &mut diagnostics);
     diagnostics
 }
 
-pub fn validate_templates(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
-    for template in dcl.templates.iter() {
+pub fn validate_templates(dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    for template in dpl.templates.iter() {
         name_is_not_reserved(&template.template_name, "template", diagnostics);
     }
 }
 
-pub fn validate_functions(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
-    for function in dcl.functions.iter() {
+pub fn validate_functions(dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    for function in dpl.functions.iter() {
         if function.function_type != "javascript" {
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("unsupported function type '{}' currently only javascript is supported", function.function_type.as_str())));
         }
@@ -35,7 +35,7 @@ pub fn validate_functions(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("function name cannot be empty")));
         }
         name_is_not_reserved(&function.function_name, "function", diagnostics);
-        if let Some(r) = dcl.resources.iter().find(|x| x.resource_name.as_str() == function.function_name.as_str()) {
+        if let Some(r) = dpl.resources.iter().find(|x| x.resource_name.as_str() == function.function_name.as_str()) {
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_name, format!("cannot name a function the same name as a resource. found resource '{}' with same name as this function", r.resource_name.as_str())));
         }
     }
@@ -49,16 +49,16 @@ pub fn name_is_not_reserved<S: SpannedStr>(name: S, typ: &str, diagnostics: &mut
     }
 }
 
-pub fn validate_resources(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
-    for resource in dcl.resources.iter() {
-        resource_has_corresponding_template(resource, dcl, diagnostics);
-        resource_has_valid_jsonpath_references(resource, dcl, diagnostics);
+pub fn validate_resources(dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    for resource in dpl.resources.iter() {
+        resource_has_corresponding_template(resource, dpl, diagnostics);
+        resource_has_valid_jsonpath_references(resource, dpl, diagnostics);
         name_is_not_reserved(&resource.resource_name, "resource", diagnostics);
     }
 }
 
-pub fn resource_has_corresponding_template(resource: &ResourceSection, dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
-    if !dcl.templates.iter().any(|x| resource.template_name.s == x.template_name.s) {
+pub fn resource_has_corresponding_template(resource: &ResourceSection, dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    if !dpl.templates.iter().any(|x| resource.template_name.s == x.template_name.s) {
         diagnostics.push(SpannedDiagnostic::from_str_at_line(
             &resource.template_name,
             format!(
@@ -71,19 +71,19 @@ pub fn resource_has_corresponding_template(resource: &ResourceSection, dcl: &Dcl
 }
 
 /// returns Some(_) if the function name was found to be a function
-/// in the dcl file, None otherwise. this function will submit diagnostics as-needed.
+/// in the dpl file, None otherwise. this function will submit diagnostics as-needed.
 /// such that if it returns Some(_) there may be 0 or more diagnostics added, and the caller
 /// does not need to add more. if it returns None there are guaranteed to be no diagnostics added
 /// and the caller should continue checking if its a resource reference instead.
 pub fn resource_has_valid_function_reference(
     resource: &ResourceSection,
-    dcl: &DclFile,
+    dpl: &DplFile,
     diagnostics: &mut Vec<SpannedDiagnostic>,
     function_name: &str,
     jpq: &jsonpath_rust::parser::model::JpQuery,
     jpq_location: &StringAtLine,
 ) -> Option<()> {
-    let _function = dcl.functions.iter().find(|x| x.function_name.as_str() == function_name)?;
+    let _function = dpl.functions.iter().find(|x| x.function_name.as_str() == function_name)?;
     // we know this reference is a function, perform validations that
     // it only has 1 more segment
     let last = match jpq.segments.last() {
@@ -154,7 +154,7 @@ pub fn resource_has_valid_function_reference(
         );
         return Some(());
     }
-    match dcl.resources.iter().find(|x| x.resource_name.as_str() == function_arg_resource) {
+    match dpl.resources.iter().find(|x| x.resource_name.as_str() == function_arg_resource) {
         Some(_) => {}
         None => {
             diagnostics.push(
@@ -173,7 +173,7 @@ pub fn resource_has_valid_function_reference(
     Some(())
 }
 
-pub fn resource_has_valid_jsonpath_references(resource: &ResourceSection, dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+pub fn resource_has_valid_jsonpath_references(resource: &ResourceSection, dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
     let jsonpaths = resource.input.get_all_json_paths();
     for jp in jsonpaths {
         let mut jpq = match jsonpath_rust::parser::parse_json_path(&jp.s) {
@@ -192,11 +192,11 @@ pub fn resource_has_valid_jsonpath_references(resource: &ResourceSection, dcl: &
         // must be a valid resource or function:
         let referenced_resource_name = first_segment.to_string();
         // first, try to check if its a valid function:
-        if let Some(_) = resource_has_valid_function_reference(resource, dcl, diagnostics, &referenced_resource_name, &jpq, &jp) {
+        if let Some(_) = resource_has_valid_function_reference(resource, dpl, diagnostics, &referenced_resource_name, &jpq, &jp) {
             continue;
         }
         // if its not a function reference, then its a resource reference:
-        let referenced_resource = match dcl.resources.iter().find(|r| r.resource_name.as_str() == referenced_resource_name.as_str()) {
+        let referenced_resource = match dpl.resources.iter().find(|r| r.resource_name.as_str() == referenced_resource_name.as_str()) {
             Some(r) => r,
             None => {
                 diagnostics.push(SpannedDiagnostic::from_str_at_line(jp.clone(), format!("resource '{}' references a non-existant resource '{}'", resource.resource_name.as_str(), referenced_resource_name)));
@@ -414,7 +414,7 @@ resource my_template(other)
 resource my_template(my_resource)
     {"a": $.other.name}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should have no validation errors");
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
 
     #[test]
@@ -430,7 +430,7 @@ resource my_template(other)
 resource my_template(my_resource)
     {"a": $.other.input}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should have no validation errors");
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
 
     #[test]
@@ -446,7 +446,7 @@ resource my_template(other)
 resource my_template(my_resource)
     {"a": $.other.output}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should have no validation errors");
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
 
     #[test]
@@ -462,7 +462,7 @@ resource my_template(other)
 resource my_template(my_resource)
     {"a": $.other.accum}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should have no validation errors");
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
 
     #[test]
@@ -478,7 +478,7 @@ resource my_template(other)
 resource my_template(my_resource)
     {"a": $.other.input.blah}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should have no validation errors");
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
 
     #[test]
@@ -575,7 +575,7 @@ resource my_template(other)
 resource my_template(this_resource_exists)
     {}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should not error");
+        let _dpl = parse_and_validate(file).expect("it should not error");
     }
 
     #[test]
@@ -594,7 +594,7 @@ resource my_template(other)
 resource my_template(this_resource_exists)
     {}
 "#;
-        let _dcl = parse_and_validate(file).expect("it should not error");
+        let _dpl = parse_and_validate(file).expect("it should not error");
     }
 
     #[test]

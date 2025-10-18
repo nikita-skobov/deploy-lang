@@ -1,4 +1,4 @@
-# this example shows how to use dcl to create an s3 bucket and a
+# this example shows how to use dpl to create an s3 bucket and a
 # policy that allows getting any object in that s3 bucket
 # every update to the policy will update the policy in place, and set the new
 # policy as the default version, and delete the old version

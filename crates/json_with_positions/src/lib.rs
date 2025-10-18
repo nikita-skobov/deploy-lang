@@ -5,7 +5,7 @@ use str_at_line::{LineCounterIterator, StrAtLine, StringAtLine};
 /// we cant represent a json_with_positions::Value as a serde_json::Value because of the JsonPath,
 /// so we treat JsonPaths as an object with just this one key, and the value is a string
 /// containing the json path query
-const PATH_QUERY_KEY: &str = "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__";
+const PATH_QUERY_KEY: &str = "__DPL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__";
 
 
 #[derive(Debug, Clone, PartialEq)]

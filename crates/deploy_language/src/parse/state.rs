@@ -2,7 +2,7 @@
 //! this module defines the shape of the state section
 //! which defines how/where state is loaded
 
-use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{Section, SpannedDiagnostic}, DplFile};
 
 pub const SECTION_TYPE: &str = "state";
 
@@ -13,8 +13,8 @@ pub struct StateSection {
     pub file: String,
 }
 
-pub fn parse_state_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
-    if dcl.state.is_some() {
+pub fn parse_state_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+    if dpl.state.is_some() {
         let mut diag = SpannedDiagnostic::new(
             "cannot have multiple state sections".to_string(), section.start_line, 999);
         diag.span.end.line = section.end_line;
@@ -28,13 +28,13 @@ pub fn parse_state_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Resu
         })?;
     let file = file_line.s.replace("file", "").trim().to_string();
     let parsed = StateSection { file };
-    dcl.state = Some(parsed);
+    dpl.state = Some(parsed);
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dcl_file};
+    use crate::parse::{parse_document_to_sections, sections_to_dpl_file};
 
     use super::*;
 
@@ -45,8 +45,8 @@ state
   file hello.txt"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&sections).unwrap();
-        assert_eq!(dcl.state, Some(StateSection { file: "hello.txt".to_string() }));
+        let dpl = sections_to_dpl_file(&sections).unwrap();
+        assert_eq!(dpl.state, Some(StateSection { file: "hello.txt".to_string() }));
     }
 
     #[test]
@@ -56,7 +56,7 @@ state
   otherthing hello.txt"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let diag = sections_to_dcl_file(&sections).expect_err("dsa");
+        let diag = sections_to_dpl_file(&sections).expect_err("dsa");
         assert_eq!(diag.span.start.line, 1);
         assert_eq!(diag.span.end.line, 2);
         assert_eq!(diag.message, "state section missing 'file' option in its body");
@@ -73,7 +73,7 @@ state
 "#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let diag = sections_to_dcl_file(&sections).expect_err("dsa");
+        let diag = sections_to_dpl_file(&sections).expect_err("dsa");
         assert_eq!(diag.span.start.line, 4);
         assert_eq!(diag.span.end.line, 5);
         assert_eq!(diag.message, "cannot have multiple state sections");

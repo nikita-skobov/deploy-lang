@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use dcl_language::parse::template::{ArgTransform, CliCommand, Directive, Transition};
+use deploy_language::parse::template::{ArgTransform, CliCommand, Directive, Transition};
 use jsonpath_rust::{parser::model::{JpQuery, Segment}};
 use log::Log;
 use serde_json::Map;

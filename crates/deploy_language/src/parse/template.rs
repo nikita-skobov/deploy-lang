@@ -1,6 +1,6 @@
 use str_at_line::{StrAtLine, StringAtLine};
 
-use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{Section, SpannedDiagnostic}, DplFile};
 
 pub const SECTION_TYPE: &str = "template";
 
@@ -41,7 +41,7 @@ pub struct CliCommand {
     /// name of the command to be ran
     pub command: StringAtLine,
     /// the first args that are always to be added to the command
-    /// these should be defined statically in the dcl file
+    /// these should be defined statically in the dpl file
     pub prefix_args: Vec<StringAtLine>,
     pub arg_transforms: Vec<ArgTransform>,
 }
@@ -51,7 +51,7 @@ pub struct CliCommand {
 /// passing the transformed args to the actual command
 #[derive(Debug, PartialEq, Clone)]
 pub enum ArgTransform {
-    /// represented in .dcl file by "... $.query"
+    /// represented in .dpl file by "... $.query"
     /// this transform takes the provided json path query
     /// and expands the value found at that path query
     /// from the resource object into the arg set, merging the existing
@@ -60,11 +60,11 @@ pub enum ArgTransform {
     /// is a json object. destructuring only works for objects, and is an error
     /// if it is applied to non-objects.
     Destructure(jsonpath_rust::parser::model::JpQuery),
-    /// represented in .dcl file by "! field-name"
+    /// represented in .dpl file by "! field-name"
     /// this transformation removes the field from the arg set, if present
     /// if the arg set does not have the field, it is a no-op
     Remove(StringAtLine),
-    /// represented in .dcl file by "field-name $.query"
+    /// represented in .dpl file by "field-name $.query"
     /// this transform takes the provided json path query
     /// evaluates it from the resource object, and sets the result value to the field
     /// of the given name
@@ -149,7 +149,7 @@ pub enum Directive {
     // SameDiff { kw: StringAtLine, same: Vec<jsonpath_rust::parser::model::JpQuery>, diff: Vec<jsonpath_rust::parser::model::JpQuery> },
 }
 
-pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+pub fn parse_template_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
     let template_name = section.parameters
         .ok_or("must have a template name")
         .map_err(|e| {
@@ -183,7 +183,7 @@ pub fn parse_template_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
             return Err(diag);
         }
     }
-    dcl.templates.push(out);
+    dpl.templates.push(out);
 
     Ok(())
 }
@@ -467,7 +467,7 @@ pub fn parse_command<'a>(
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dcl_file, template::{ArgTransform, Directive}};
+    use crate::parse::{parse_document_to_sections, sections_to_dpl_file, template::{ArgTransform, Directive}};
     use assert_matches::assert_matches;
 
     #[test]
@@ -480,7 +480,7 @@ template something
         "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let err = sections_to_dcl_file(&valid_sections).expect_err("it should err");
+        let err = sections_to_dpl_file(&valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('mypath')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
         assert_eq!(err.span.start.column, 10);
@@ -493,7 +493,7 @@ template something
         "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let err = sections_to_dcl_file(&valid_sections).expect_err("it should err");
+        let err = sections_to_dpl_file(&valid_sections).expect_err("it should err");
         assert!(err.message.starts_with("failed to parse json path query ('not-a-path')"), "it was {}", err.message);
         assert_eq!(err.span.start.line, 4);
         assert_eq!(err.span.start.column, 15);
@@ -512,8 +512,8 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 3);
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 3);
     }
 
     #[test]
@@ -527,8 +527,8 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 3);
     }
 
     #[test]
@@ -541,11 +541,11 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates.len(), 1);
-        assert_eq!(dcl.templates[0].create.cli_commands.len(), 1);
-        assert_eq!(dcl.templates[0].create.cli_commands[0].directives.len(), 1);
-        assert_matches!(&dcl.templates[0].create.cli_commands[0].directives[0], Directive::DropOutput { kw } => {
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::DropOutput { kw } => {
             assert_eq!(kw.s, "dropoutput");
             assert_eq!(kw.line, 3);
             assert_eq!(kw.col, 5);
@@ -562,11 +562,11 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates.len(), 1);
-        assert_eq!(dcl.templates[0].create.cli_commands.len(), 1);
-        assert_eq!(dcl.templates[0].create.cli_commands[0].directives.len(), 1);
-        assert_matches!(&dcl.templates[0].create.cli_commands[0].directives[0], Directive::Accum { kw, src_path, accum_path } => {
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Accum { kw, src_path, accum_path } => {
             assert_eq!(kw.s, "accum");
             assert_eq!(kw.line, 3);
             assert_eq!(kw.col, 5);
@@ -595,10 +595,10 @@ template xyz
 resource xyz(resourceA)
     {}
 "#;
-        let mut dcl = crate::parse_and_validate(document).expect("it should not error");
-        assert_eq!(dcl.resources.len(), 1);
-        assert_eq!(dcl.templates.len(), 1);
-        let mut template = dcl.templates.remove(0);
+        let mut dpl = crate::parse_and_validate(document).expect("it should not error");
+        assert_eq!(dpl.resources.len(), 1);
+        assert_eq!(dpl.templates.len(), 1);
+        let mut template = dpl.templates.remove(0);
         assert_eq!(template.create.directives.len(), 0);
         assert_eq!(template.create.cli_commands.len(), 1);
         assert_eq!(template.create.cli_commands[0].cmd.command, "echo");
@@ -634,23 +634,23 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let mut dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
-        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        let mut dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 3);
+        let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 1);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$");
         });
-        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 1);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$input");
         });
-        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 2);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
@@ -677,9 +677,9 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let mut dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates[0].create.cli_commands.len(), 1);
-        let mut next = dcl.templates[0].create.cli_commands.remove(0);
+        let mut dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 2);
         assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
             assert_eq!(kw.s, "diff");
@@ -712,11 +712,11 @@ template something
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dcl.templates[0].create.cli_commands.len(), 3);
-        assert_eq!(dcl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 2);
-        assert_eq!(dcl.templates[0].create.cli_commands[1].cmd.arg_transforms.len(), 2);
-        assert_eq!(dcl.templates[0].create.cli_commands[2].cmd.arg_transforms.len(), 2);
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 3);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 2);
+        assert_eq!(dpl.templates[0].create.cli_commands[1].cmd.arg_transforms.len(), 2);
+        assert_eq!(dpl.templates[0].create.cli_commands[2].cmd.arg_transforms.len(), 2);
     }
 
     #[test]
@@ -740,9 +740,9 @@ template aws_lambda_function
 "#;
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let mut dcl = sections_to_dcl_file(&valid_sections).expect("it should not err");
-        assert_eq!(1, dcl.templates.len());
-        let template = dcl.templates.remove(0);
+        let mut dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(1, dpl.templates.len());
+        let template = dpl.templates.remove(0);
         assert_eq!(template.template_name.s, "aws_lambda_function");
         assert!(template.update.is_some());
         assert!(template.delete.is_some());

@@ -6,7 +6,7 @@
 //! section type, otherwise the section is discarded.
 //! this enables us to extend the language features in the future.
 //!
-//! a dcl file is composed of sections
+//! a dpl file is composed of sections
 //! each section has a required type, followed by optional parameters on the same line.
 //! the following line becomes part of the section body as long as they start with at least one
 //! indentation character (a space or a tab). all following lines after that also become
@@ -21,7 +21,7 @@ pub mod function;
 
 use str_at_line::{LineCounterIterator, SpannedStr, StrAtLine};
 
-use crate::DclFile;
+use crate::DplFile;
 
 
 pub const COMMENT_CHAR: char = '#';
@@ -131,11 +131,11 @@ pub fn consume_until_empty<'a, I>(
     None
 }
 
-pub fn sections_to_dcl_file_with_logger<'a>(
+pub fn sections_to_dpl_file_with_logger<'a>(
     sections: &Vec<Section<'a>>,
     mut _logger: impl Logger,
-) -> Result<DclFile, SpannedDiagnostic> {
-    let mut out = DclFile::default();
+) -> Result<DplFile, SpannedDiagnostic> {
+    let mut out = DplFile::default();
     for section in sections {
         match section.typ.s {
             state::SECTION_TYPE => {
@@ -162,9 +162,9 @@ pub fn sections_to_dcl_file_with_logger<'a>(
 
 /// after calling `parse_document_to_sections` you filter out the errors and pass
 /// the successfully parsed sections to this function, and it parses generic Sections into
-/// concrete Sections of a DclFile, discarding any unknown sections
-pub fn sections_to_dcl_file<'a>(sections: &Vec<Section<'a>>) -> Result<DclFile, SpannedDiagnostic> {
-    sections_to_dcl_file_with_logger(sections, ())
+/// concrete Sections of a DplFile, discarding any unknown sections
+pub fn sections_to_dpl_file<'a>(sections: &Vec<Section<'a>>) -> Result<DplFile, SpannedDiagnostic> {
+    sections_to_dpl_file_with_logger(sections, ())
 }
 
 pub trait Logger: Clone {

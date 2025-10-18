@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "name": "dcl",
+  "name": "dpl",
   "fileTypes": [
-    "dcl"
+    "dpl"
   ],
   "patterns": [
     {
@@ -12,14 +12,14 @@
       "begin": "^(state)",
       "end": "^$",
       "beginCaptures": {
-        "1": { "name": "keyword.control.dcl" }
+        "1": { "name": "keyword.control.dpl" }
       },
       "patterns": [
         {
           "match": "(file)(\\s+)([^#]+)",
           "captures": {
-            "1": { "name": "entity.name.type.enum.dcl" },
-            "3": { "name": "string.unquoted.argument.dcl" }
+            "1": { "name": "entity.name.type.enum.dpl" },
+            "3": { "name": "string.unquoted.argument.dpl" }
           }
         }
       ]
@@ -28,9 +28,9 @@
       "begin": "^(resource)\\s+(\\w+)\\((\\w+)\\)",
       "end": "^$",
       "beginCaptures": {
-        "1": { "name": "keyword.control.dcl" },
-        "2": { "name": "entity.name.function.dcl" },
-        "3": { "name": "variable.other.dcl" }
+        "1": { "name": "keyword.control.dpl" },
+        "2": { "name": "entity.name.function.dpl" },
+        "3": { "name": "variable.other.dpl" }
       },
       "patterns": [
         {
@@ -45,9 +45,9 @@
       "begin": "^(function)\\s+(javascript)\\((\\w+)\\)",
       "end": "^$",
       "beginCaptures": {
-        "1": { "name": "keyword.control.dcl" },
-        "2": { "name": "entity.name.function.dcl" },
-        "3": { "name": "variable.other.dcl" }
+        "1": { "name": "keyword.control.dpl" },
+        "2": { "name": "entity.name.function.dpl" },
+        "3": { "name": "variable.other.dpl" }
       },
       "patterns": [
         {
@@ -59,8 +59,8 @@
       "begin": "^(template)(\\s)([^#]+)",
       "end": "^$",
       "beginCaptures": {
-        "1": { "name": "keyword.control.dcl" },
-        "3": { "name": "entity.name.function.dcl" }
+        "1": { "name": "keyword.control.dpl" },
+        "3": { "name": "entity.name.function.dpl" }
       },
       "patterns": [
         {
@@ -70,7 +70,7 @@
           "begin": "^(\\s+)(create|update|delete)",
           "end": "(?=^\\1\\w|^$)",
           "beginCaptures": {
-            "2": { "name": "entity.name.type.enum.dcl" }
+            "2": { "name": "entity.name.type.enum.dpl" }
           },
           "patterns": [
             {
@@ -80,7 +80,7 @@
               "match": "^(\\s+)(@[\\w-]+)(\\s*)?([^#]+)?",
               "captures": {
                 "2": {
-                  "name": "storage.type.dcl"
+                  "name": "storage.type.dpl"
                 },
                 "4": {
                   "patterns": [
@@ -93,8 +93,8 @@
               "begin": "^(\\s+)(\\w+)(\\s)?([^#]+)?",
               "end": "(?=^\\1\\S|^\\s+(create|update|delete)\\b|^$)",
               "beginCaptures": {
-                "2": { "name": "entity.name.function.dcl" },
-                "4": { "name": "string.unquoted.argument.dcl" }
+                "2": { "name": "entity.name.function.dpl" },
+                "4": { "name": "string.unquoted.argument.dpl" }
               },
               "patterns": [
                 {
@@ -103,20 +103,20 @@
                 {
                   "match": "^(\\s+)(\\.\\.\\.)([^#]+)",
                   "captures": {
-                    "3": { "name": "variable.other.constant.dcl" }
+                    "3": { "name": "variable.other.constant.dpl" }
                   }
                 },
                 {
                   "match": "^(\\s+)(\\!)([^#]+)",
                   "captures": {
-                    "3": { "name": "variable.other.dcl" }
+                    "3": { "name": "variable.other.dpl" }
                   }
                 },
                 {
                   "match": "^(\\s+)([\\w-]+)(\\s)([^#]+)",
                   "captures": {
-                    "2": { "name": "variable.other.dcl" },
-                    "4": { "name": "variable.other.constant.dcl" }
+                    "2": { "name": "variable.other.dpl" },
+                    "4": { "name": "variable.other.constant.dpl" }
                   }
                 }
               ]
@@ -128,7 +128,7 @@
   ],
   "repository": {
     "comment": {
-      "name": "comment.line.number-sign.dcl",
+      "name": "comment.line.number-sign.dpl",
       "match": "#.*$"
     },
     "constant": {
@@ -274,7 +274,7 @@
     },
     "jsonpath": {
       "match": "\\$(\\.([\\w]+|\\*)|\\[([-\\d]+|('[\\w\\ \\-\\d]*'|\"[\\w\\ \\-\\d]*\"))\\])*",
-      "name": "variable.other.constant.dcl"
+      "name": "variable.other.constant.dpl"
     },
     "json": {
       "patterns": [
@@ -302,5 +302,5 @@
       ]
     }
 	},
-  "scopeName": "source.dcl"
+  "scopeName": "source.dpl"
 }

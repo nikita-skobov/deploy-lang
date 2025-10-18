@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use dcl_language::{parse::{resource::ResourceSection, template::TemplateSection, SpannedDiagnostic}, DclFile};
+use deploy_language::{parse::{resource::ResourceSection, template::TemplateSection, SpannedDiagnostic}, DplFile};
 use json_with_positions::Position;
 use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::State, Query}};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub const FUNCTION_RESOURCE_PREFIX: &str = "__priv_internal_function_resource__"
 pub struct StateFile {
     /// reserved root field for later metadata, currently unused and values will show up as null
     #[serde(default)]
-    pub dcl_metadata: serde_json::Value,
+    pub dpl_metadata: serde_json::Value,
     /// map of resources and their state representation.
     /// note the key is the resource name, thus must be unique across all resources.
     /// also note the ResourceInState also contains the resource name for convenience
@@ -31,12 +31,12 @@ pub fn save_state(state_path: &str, state: &StateFile) -> Result<(), String> {
         .map_err(|e| format!("failed to save state back to file '{}': {:?}", state_path, e))
 }
 
-// TODO: need tp update DclFile definitions to preserve section line positions.
+// TODO: need tp update DplFile definitions to preserve section line positions.
 // current reporting all errors on line 0 :/
 /// loads the state file and parses as a json object. if the state file doesnt exist, it will be
 /// created, and treated as an empty {} object
-pub fn load_state(dcl: &DclFile) -> Result<(StateFile, String), SpannedDiagnostic> {
-    let state = dcl.state.as_ref().ok_or("no state file provided")
+pub fn load_state(dpl: &DplFile) -> Result<(StateFile, String), SpannedDiagnostic> {
+    let state = dpl.state.as_ref().ok_or("no state file provided")
         .map_err(|e| SpannedDiagnostic::new(e, 0, 999))?;
     let state_file = state.file.clone();
     let file = match std::fs::OpenOptions::new().read(true).open(&state.file) {
@@ -94,10 +94,10 @@ pub struct ResourceInState {
 
 #[derive(Debug, Clone)]
 pub enum TransitionableResource {
-    /// a resource is Createable if it exists in the current .dcl file
+    /// a resource is Createable if it exists in the current .dpl file
     /// but has no prior state entry
     Create { current_entry: ResourceSection },
-    /// a resource is Updaeable if it exists in the current .dcl file
+    /// a resource is Updaeable if it exists in the current .dpl file
     /// and it also has a prior state entry. Note: the existance of an Update TransitionableResource
     /// implies that it's current input and last input differ. if a resource's current input is exactly the same
     /// as its input from the state entry, it should not be represented here. There is a caveat which is
@@ -106,11 +106,11 @@ pub enum TransitionableResource {
     /// and then this resource's input can be represented as a serde_json::Value, at which point
     /// we can then compare the current input against the last state input
     Update { state_entry: ResourceInState, current_entry: ResourceSection },
-    /// a resource is Deleteable if it does not exist in the current .dcl file
+    /// a resource is Deleteable if it does not exist in the current .dpl file
     /// but it has a prior state entry. for this reason the state entry must preserve the template name
     /// that this resource applies to. we can then look up the template and run its deletion lifecycle command(s).
     /// it is required that the template exists, otherwise it should be a runtime error to indicate to the user
-    /// that they must add back the template, or otherwise accept to have a detached resource no longer managed by dcl
+    /// that they must add back the template, or otherwise accept to have a detached resource no longer managed by dpl
     Delete { state_entry: ResourceInState },
 }
 
@@ -180,18 +180,18 @@ pub struct TrWithTemplate {
 /// where each resource is either to be created (no state entry for that resource)
 /// updated (the resource has a prior entry in state and the resource either has a json path [which means
 /// we dont know yet if it has changed or not] or the resource's input has changed from its prior state entry)
-/// or deleted (any state entries that remain that dont have a corresponding resource in the dcl file. these are resources
+/// or deleted (any state entries that remain that dont have a corresponding resource in the dpl file. these are resources
 /// that were previously created and now must be deleted).
 /// after calling this function, the state's resources will only contain no-op resources whose input has not changed
 pub fn get_transitionable_resources(
     state: &mut StateFile,
-    dcl: &mut DclFile,
+    dpl: &mut DplFile,
 ) -> Vec<TransitionableResource> {
     // first collect the known resources that are to be created or updated:
     let mut out = Vec::with_capacity(state.resources.len());
     let mut potentially_done_updates = vec![];
     let mut done_resources = HashMap::new();
-    for resource in dcl.resources.drain(..) {
+    for resource in dpl.resources.drain(..) {
         match state.resources.remove(&resource.resource_name.s) {
             Some(state_entry) => {
                 // if we can determine this resource has not changed, then we can omit it
@@ -246,7 +246,7 @@ pub fn get_transitionable_resources(
         }
     }
     // now, check all of the resources in the state file that do not have corresponding
-    // entry in the current dcl file, these resources are to be deleted:
+    // entry in the current dpl file, these resources are to be deleted:
     for (_, state_entry) in state.resources.drain() {
         out.push(TransitionableResource::Delete { state_entry })
     }
@@ -262,7 +262,7 @@ pub fn get_transitionable_resources(
 /// is a new ephemeral resource we insert into the output vec whose output is the entire value
 /// of the function call output
 pub fn insert_function_resources(
-    dcl: &DclFile,
+    dpl: &DplFile,
     state: &StateFile,
     out: &mut Vec<TransitionableResource>,
 ) -> Result<(), String> {
@@ -287,7 +287,7 @@ pub fn insert_function_resources(
                 .ok_or("json path must have at least 1 segment")?;
             let mut fn_call_name = first.to_string();
             unquote_bracketed_selector(&mut fn_call_name);
-            if let Some(func) = dcl.functions.iter().find(|x| &x.function_name.s == &fn_call_name) {
+            if let Some(func) = dpl.functions.iter().find(|x| &x.function_name.s == &fn_call_name) {
                 let resource_arg = jpq.segments.iter().nth(1)
                     .ok_or("function call must be followed by resource to be passed into said function")?;
                 let mut resource_arg = resource_arg.to_string();
@@ -353,7 +353,7 @@ pub fn resource_input_has_been_changed(current: &ResourceSection, previous: &Res
     return Some(current_input != previous.last_input)
 }
 
-pub fn match_resources_with_template(mut transitionable: Vec<TransitionableResource>, dcl: &DclFile) -> Result<Vec<TrWithTemplate>, String> {
+pub fn match_resources_with_template(mut transitionable: Vec<TransitionableResource>, dpl: &DplFile) -> Result<Vec<TrWithTemplate>, String> {
     let mut out = Vec::with_capacity(transitionable.len());
     for tr in transitionable.drain(..) {
         let template_name = tr.get_template_name()?;
@@ -365,7 +365,7 @@ pub fn match_resources_with_template(mut transitionable: Vec<TransitionableResou
             out.push(TrWithTemplate { tr, template: TemplateSection::default() });
             continue;
         }
-        let template = dcl.templates.iter()
+        let template = dpl.templates.iter()
             .find(|t| t.template_name == template_name)
             .ok_or_else(|| {
                 // important error here: we failed to find a template that a user referenced.
@@ -376,9 +376,9 @@ pub fn match_resources_with_template(mut transitionable: Vec<TransitionableResou
                 // out of state.
                 if is_delete {
                     return format!(r#"
-resource '{}' is to be deleted, but its template '{}' does not exist in the current DCL file.
+resource '{}' is to be deleted, but its template '{}' does not exist in the current DPL file.
 the following are your options, in order from most recommended to least recommended:
-1. if you edited the DCL file and removed template '{}', simply add that template back, and run deploy again.
+1. if you edited the DPL file and removed template '{}', simply add that template back, and run deploy again.
 2. if you wish to delete the resource manually, delete it manually first, then re run deploy using 'TODO some flag for explicitly deleting from state'. then run deploy again.
 3. if you wish to ignore this resource temporarily and deploy everything else, re run deploy with 'TODO some flag for ignoring this resource'.
 4. if you wish to detach this resource from state permanently, re run deploy with 'TODO some flag for explicitly detaching'. The real resource may persist indefinitely, and this program will not be able to manage it. use with caution"#,
@@ -402,7 +402,7 @@ pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) ->
     let json_paths = all_json_paths
         .iter()
         // we ignore errors here, only returning the successfully parsed json paths
-        // because that validation should have happened already by the dcl_language crate
+        // because that validation should have happened already by the deploy_language crate
         .filter_map(|x| jsonpath_rust::parser::parse_json_path(&x.s).ok());
     let mut out = Vec::with_capacity(num_json_paths);
     for jpq in json_paths {
@@ -619,16 +619,16 @@ pub fn verify_transitions(
 
 pub async fn perform_update(
     logger: &'static dyn log::Log,
-    mut dcl: DclFile,
+    mut dpl: DplFile,
     mut state: StateFile,
 ) -> Result<StateFile, String> {
     // first, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
-    let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+    let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
     // add fake resources that will correspond to the output of function calls:
-    insert_function_resources(&dcl, &state,&mut transitionable_resources)?;
+    insert_function_resources(&dpl, &state,&mut transitionable_resources)?;
     // next, ensure every resource can be matched with a template. error otherwise:
-    let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dcl)?;
+    let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dpl)?;
     // ensure every resource to be transitioned *can* be transitioned before starting any tasks:
     verify_transitions(&transitionable_resources)?;
     // split out deletes
@@ -1024,13 +1024,13 @@ mod test {
 
     use super::*;
     use assert_matches::assert_matches;
-    use dcl_language::parse::template::{ArgTransform, CliCommand, CliCommandWithDirectives};
+    use deploy_language::parse::template::{ArgTransform, CliCommand, CliCommandWithDirectives};
 
     #[test]
     fn can_determine_createable_resources() {
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "a".into(),
             template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
@@ -1038,7 +1038,7 @@ mod test {
             }"#).unwrap(),
         });
         // no prior state for resource 'a' so it should be created:
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Create { .. });
@@ -1047,7 +1047,7 @@ mod test {
 
     #[test]
     fn can_determine_deleteable_resources() {
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
         state.resources.insert("a".to_string(), ResourceInState {
             resource_name: "a".to_string(),
@@ -1057,7 +1057,7 @@ mod test {
         });
         // no current entry for resource 'a', but state does have a prior entry for resource 'a'
         // so it should be deleted
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Delete { .. });
@@ -1066,9 +1066,9 @@ mod test {
 
     #[test]
     fn can_determine_updateable_resources() {
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "a".into(),
             template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
@@ -1082,7 +1082,7 @@ mod test {
             ..Default::default()
         });
         // a has a prior state, but its input has since changed. it should be updateable
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Update { .. });
@@ -1091,9 +1091,9 @@ mod test {
 
     #[test]
     fn can_determine_updateable_resources_due_to_json_path() {
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "a".into(),
             template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
@@ -1109,7 +1109,7 @@ mod test {
         // a has a prior state, but its current input is dynamic (has a json path)
         // so it should be considered updateable until its current input can be resolved
         // to an explicit value
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Update { .. });
@@ -1118,9 +1118,9 @@ mod test {
 
     #[test]
     fn can_determine_noop_updates_if_input_unchanged() {
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "a".into(),
             template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
@@ -1135,7 +1135,7 @@ mod test {
         });
         // a has a prior state, but its last input is the same as its current input
         // therefore it should not be transitionable
-        let transitionable = get_transitionable_resources(&mut state, &mut dcl);
+        let transitionable = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 0);
         // it should be in the state still because its treated as "already done"
         assert_matches!(state.resources.get("a"), Some(r) => {
@@ -1148,17 +1148,17 @@ mod test {
 
     #[test]
     fn can_match_resources_with_their_templates() {
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        // dcl file has 1 template 't'
+        // dpl file has 1 template 't'
         let mut template = TemplateSection::default();
         template.template_name.s = "t".to_string();
-        dcl.templates.push(template);
+        dpl.templates.push(template);
         // and 3 resources. one to be created, one to be updated, and one to be deleted.
         // all point to template 't':
 
         // resources to be created because it doesnt have corresponding state entry:
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "a".into(),
             template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
@@ -1166,7 +1166,7 @@ mod test {
             }"#).unwrap(),
         });
         // resource to be updated because its state entry differs from current:
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "b".into(),
             template_name: "t".into(),
             input: json_with_positions::parse_json_value(r#"{
@@ -1185,8 +1185,8 @@ mod test {
             template_name: "t".to_string(),
             ..Default::default()
         });
-        let transitionable = get_transitionable_resources(&mut state, &mut dcl);
-        let matched = match_resources_with_template(transitionable, &dcl).expect("should not error");
+        let transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let matched = match_resources_with_template(transitionable, &dpl).expect("should not error");
         assert_eq!(matched.len(), 3);
         let mut create_found = false;
         let mut update_found = false;
@@ -1210,7 +1210,7 @@ mod test {
 
     #[test]
     fn match_resources_errors_if_template_not_found() {
-        let dcl = DclFile::default();
+        let dpl = DplFile::default();
         // resources to be created because it doesnt have corresponding state entry:
         let r = ResourceSection {
             resource_name: "a".into(),
@@ -1221,13 +1221,13 @@ mod test {
         };
         // template 't' does not exist. matching to a template should fail:
         let transitionable = vec![TransitionableResource::Create { current_entry: r }];
-        let err = match_resources_with_template(transitionable, &dcl).expect_err("it should error");
+        let err = match_resources_with_template(transitionable, &dpl).expect_err("it should error");
         assert_eq!(err, "unable to find template 't' referenced by resource 'a'");
     }
 
     #[test]
     fn match_resources_errors_with_big_scary_error_if_deleted_resources_template_removed() {
-        let dcl = DclFile::default();
+        let dpl = DplFile::default();
         // resources to be deleted because it doesnt have corresponding state entry:
         let r = ResourceInState {
             resource_name: "a".to_string(),
@@ -1236,7 +1236,7 @@ mod test {
         };
         // template 't' does not exist. matching to a template should fail:
         let transitionable = vec![TransitionableResource::Delete { state_entry: r }];
-        let err = match_resources_with_template(transitionable, &dcl).expect_err("it should error");
+        let err = match_resources_with_template(transitionable, &dpl).expect_err("it should error");
         assert!(err.starts_with("\nresource 'a' is to be deleted, but its template 't' does not exist"));
         assert!(err.contains("your options, in order from most recommended to least recommended"));
     }
@@ -1762,18 +1762,18 @@ mod test {
     #[tokio::test]
     async fn perform_update_empty_ok() {
         let logger = VecLogger::leaked();
-        let dcl = DclFile::default();
+        let dpl = DplFile::default();
         let state = StateFile::default();
-        perform_update(logger, dcl, state).await.expect("it should not error");
+        perform_update(logger, dpl, state).await.expect("it should not error");
     }
 
     #[tokio::test]
     async fn perform_update_hello_world() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
@@ -1784,8 +1784,8 @@ mod test {
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
-        dcl.templates.push(template);
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        dpl.templates.push(template);
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -1800,14 +1800,14 @@ mod test {
     async fn perform_update_resources_dependencies_processed_in_order() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
         });
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "B".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
@@ -1818,8 +1818,8 @@ mod test {
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
-        dcl.templates.push(template);
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        dpl.templates.push(template);
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 2);
         let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -1837,9 +1837,9 @@ mod test {
     async fn perform_update_resources_updates_can_become_noops() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
@@ -1848,7 +1848,7 @@ mod test {
         // but B depends on A, and so we dont know if it should actually be updated or not:
         // in this case, B should NOT be updated because its current input will be resolved
         // (after A completes) to be the exact same as its last input
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "B".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
@@ -1866,8 +1866,8 @@ mod test {
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         template.update = Some(Default::default());
-        dcl.templates.push(template);
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        dpl.templates.push(template);
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 2);
         let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -1884,15 +1884,15 @@ mod test {
     async fn perform_update_resources_can_do_updates() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be updated"}"#).unwrap(),
         });
         // B has been deployed before, it should cause an update
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "B".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
@@ -1913,8 +1913,8 @@ mod test {
         if let Some(upd) = &mut template.update {
             upd.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
         }
-        dcl.templates.push(template);
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        dpl.templates.push(template);
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 2);
         let a_resource = out_state.resources.remove("A").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -1932,7 +1932,7 @@ mod test {
     async fn perform_update_resources_can_do_updates_conditional_commands_none() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = dcl_language::parse_and_validate(r#"
+        let mut dpl = deploy_language::parse_and_validate(r#"
 template xyz
   create
     echo hello
@@ -1941,9 +1941,9 @@ template xyz
     echo fielda changed
     @diff $.b
     echo fieldb changed
-"#).expect("it should be a valid dcl");
+"#).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"a","b":"b", "c":"c"}"#).unwrap(),
@@ -1956,7 +1956,7 @@ template xyz
             last_input: serde_json::json!({ "a": "a", "b": "b" }),
             ..Default::default()
         });
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -1981,9 +1981,9 @@ template xyz
     @diff $.b
     echo { "b": "bchanged" }
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"achanged","b":"b"}"#).unwrap(),
@@ -1995,7 +1995,7 @@ template xyz
             last_input: serde_json::json!({ "a": "a", "b": "b" }),
             ..Default::default()
         });
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -2006,9 +2006,9 @@ template xyz
 
         // run the same test but this time bchanged:
         let logger = VecLogger::leaked();
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"a","b":"bchanged"}"#).unwrap(),
@@ -2020,7 +2020,7 @@ template xyz
             last_input: serde_json::json!({ "a": "a", "b": "b" }),
             ..Default::default()
         });
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -2044,9 +2044,9 @@ template xyz
     @diff $.b
     echo { "b": "bchanged" }
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"achanged","b":"bchanged"}"#).unwrap(),
@@ -2058,7 +2058,7 @@ template xyz
             last_input: serde_json::json!({ "a": "a", "b": "b" }),
             ..Default::default()
         });
-        let mut out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let a_resource = out_state.resources.remove("resourceA").expect("it should have an output resource 'A'");
         assert_eq!(a_resource.depends_on.len(), 0);
@@ -2073,9 +2073,9 @@ template xyz
     async fn perform_update_resources_update_requires_same_template_name() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
@@ -2084,7 +2084,7 @@ template xyz
         // but B depends on A, and so we dont know if it should actually be updated or not:
         // in this case, B should NOT be updated because its current input will be resolved
         // (after A completes) to be the exact same as its last input
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "B".into(),
             template_name: "different template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
@@ -2101,8 +2101,8 @@ template xyz
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
-        dcl.templates.push(template);
-        let err = perform_update(logger, dcl, state).await.expect_err("it should error");
+        dpl.templates.push(template);
+        let err = perform_update(logger, dpl, state).await.expect_err("it should error");
         assert_eq!(err, "resource 'B' currently references template 'different template' but it was previously deployed with template 'template'");
     }
 
@@ -2110,9 +2110,9 @@ template xyz
     async fn perform_update_should_error_if_no_template_section_update() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        dcl.resources.push(ResourceSection {
+        dpl.resources.push(ResourceSection {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
@@ -2125,8 +2125,8 @@ template xyz
         template.template_name.s = "template".to_string();
         // template does not have an update subsection. it should error because
         // A is due to be updated, but template does not support updates
-        dcl.templates.push(template);
-        let error = perform_update(logger, dcl, state).await.expect_err("it should error");
+        dpl.templates.push(template);
+        let error = perform_update(logger, dpl, state).await.expect_err("it should error");
         assert!(error.starts_with(r#"resource 'A' is to be updated but template 'template' does not define any update commands"#), "{}", error);
     }
 
@@ -2134,9 +2134,9 @@ template xyz
     async fn perform_update_should_error_if_no_template_section_delete() {
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
-        let mut dcl = DclFile::default();
+        let mut dpl = DplFile::default();
         let mut state = StateFile::default();
-        // A was previously in state, but not in dcl file therefore becomes a delete
+        // A was previously in state, but not in dpl file therefore becomes a delete
         let mut resource_in_state = ResourceInState::default();
         resource_in_state.template_name = "template".to_string();
         resource_in_state.resource_name = "A".to_string();
@@ -2145,8 +2145,8 @@ template xyz
         template.template_name.s = "template".to_string();
         // template does not have a delete subsection. it should error because
         // A is due to be deleted, but template does not support deletes
-        dcl.templates.push(template);
-        let error = perform_update(logger, dcl, state).await.expect_err("it should error");
+        dpl.templates.push(template);
+        let error = perform_update(logger, dpl, state).await.expect_err("it should error");
         assert!(error.starts_with(r#"resource 'A' is to be deleted but template 'template' does not define any delete commands"#), "{}", error);
     }
 
@@ -2202,7 +2202,7 @@ template xyz
   delete
     echo deleted
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause a delete
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2211,7 +2211,7 @@ template xyz
             last_input: serde_json::json!({ "a": "a", "b": "b" }),
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 0);
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["deleting 'resourceA'", "resource 'resourceA' OK"]);
@@ -2228,7 +2228,7 @@ template xyz
   delete
     echo deleted
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause a delete
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2246,7 +2246,7 @@ template xyz
             depends_on: vec!["resourceA".to_string()],
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 0);
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["deleting 'resourceB'", "resource 'resourceB' OK", "deleting 'resourceA'", "resource 'resourceA' OK"]);
@@ -2266,7 +2266,7 @@ template xyz
 resource xyz(new)
   {"a":"a"}
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, and previously depended on "new"
         // but new is not being deleted, so resourceA shouldnt wait for "new" to be deleted
@@ -2277,7 +2277,7 @@ resource xyz(new)
             depends_on: vec!["new".to_string()],
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         assert!(out_state.resources.contains_key("new"));
         let logs = logger.get_logs();
@@ -2306,7 +2306,7 @@ template xyz
 resource xyz(resourceA)
     {}
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2316,7 +2316,7 @@ resource xyz(resourceA)
             output: serde_json::json!({"someval": "somevalue"}),
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the update runs 2 commands
@@ -2341,9 +2341,9 @@ template xyz
 resource xyz(resourceA)
     {}
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let state = StateFile::default();
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the output of `echo bye` should override the accum, which was previously
@@ -2367,9 +2367,9 @@ template xyz
 resource xyz(resourceA)
     {}
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let state = StateFile::default();
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the output of the second echo normally would have overridden the first output
@@ -2393,9 +2393,9 @@ template xyz
 resource xyz(resourceA)
   { "thing": "hello" }
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let state = StateFile::default();
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the output of a should be what the echo outputted
@@ -2419,9 +2419,9 @@ template xyz
 resource xyz(resourceA)
   { "thing": "hello" }
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let state = StateFile::default();
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the output of a should be what the echo outputted
@@ -2446,7 +2446,7 @@ template xyz
 resource xyz(resourceA)
   { "thing": "hello" }
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2456,7 +2456,7 @@ resource xyz(resourceA)
             output: serde_json::json!({ "someval": "somevalue" }),
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the output of a should be what the echo outputted
@@ -2483,7 +2483,7 @@ template xyz
 resource xyz(resourceA)
     {}
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2493,7 +2493,7 @@ resource xyz(resourceA)
             output: serde_json::json!({"someval": "somevalue"}),
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the update runs 2 commands
@@ -2521,7 +2521,7 @@ template xyz
 resource xyz(resourceA)
     {}
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2531,7 +2531,7 @@ resource xyz(resourceA)
             output: serde_json::json!({"someval": "somevalue"}),
             ..Default::default()
         });
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the update runs a command
@@ -2553,7 +2553,7 @@ template xyz
     rm
       force $.output.filename
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // resourceA has been deployed before, it should cause a delete
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -2566,7 +2566,7 @@ template xyz
         std::fs::write("blah.txt", "").unwrap();
         let file = PathBuf::from("blah.txt");
         assert!(file.exists());
-        let out_state = perform_update(logger, dcl, state).await.expect("it should not error");
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert!(!file.exists());
         assert_eq!(out_state.resources.len(), 0);
         let logs = logger.get_logs();
@@ -2592,7 +2592,7 @@ resource some_template(A)
 resource some_template(B)
     {"x": $.A.output}
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // both A and B were already in state:
         for resource_name in ["A", "B"] {
@@ -2610,7 +2610,7 @@ resource some_template(B)
 
         // should be empty because resource B depends on A, but A doesnt need to be updated, and therefore
         // its value is the same
-        let trs = get_transitionable_resources(&mut state, &mut dcl);
+        let trs = get_transitionable_resources(&mut state, &mut dpl);
         assert!(trs.is_empty());
     }
 
@@ -2630,7 +2630,7 @@ resource some_template(A)
 resource some_template(B)
     {"y": $.A.output}
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // both A and B were already in state:
         for resource_name in ["A", "B"] {
@@ -2651,7 +2651,7 @@ resource some_template(B)
         // to be able to do this comparison.
         // TODO: mini optimization here is before doing the expensive lookup, try to check if
         // B's keys are all the same
-        let mut trs = get_transitionable_resources(&mut state, &mut dcl);
+        let mut trs = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(trs.len(), 1);
         let resource_b_tr = trs.remove(0);
         assert_eq!(resource_b_tr.get_resource_name(), "B");
@@ -2684,13 +2684,13 @@ resource aws_s3_bucket(my_s3_bucket)
   }
 "#;
         let state = StateFile::default();
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
         // we run deploy once on an empty state and it works fine
-        let state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        let state = perform_update(logger, dpl, state).await.expect("initial deploy should work");
         assert_eq!(logger.get_logs(), vec!["creating 'my_s3_bucket'", "resource 'my_s3_bucket' OK", "creating 'my_policy'", "resource 'my_policy' OK"]);
-        // but now we update the dcl, and resource "my_policy" points to the output, rather than the input of "my_s3_bucket"
+        // but now we update the dpl, and resource "my_policy" points to the output, rather than the input of "my_s3_bucket"
         let document = r#"
 template aws_s3_bucket
   create
@@ -2714,10 +2714,10 @@ resource aws_s3_bucket(my_s3_bucket)
     "bucket": "xyz"
   }
 "#;
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         // this should still succeed but should only update my_policy
         let logger = VecLogger::leaked();
-        let state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        let state = perform_update(logger, dpl, state).await.expect("initial deploy should work");
         assert!(state.resources.contains_key("my_policy"));
         assert!(state.resources.contains_key("my_s3_bucket"));
         assert_eq!(logger.get_logs(), vec!["updating 'my_policy'", "resource 'my_policy' OK"]);
@@ -2733,11 +2733,11 @@ template hello
 resource hello(r1)
     {}
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 1);
-        insert_function_resources(&dcl, &state, &mut transitionable_resources).unwrap();
+        insert_function_resources(&dpl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 1);
     }
 
@@ -2757,18 +2757,18 @@ function javascript(myfunc)
 resource hello(r1)
     {"a": $.myfunc['r2']}
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 2);
-        insert_function_resources(&dcl, &state, &mut transitionable_resources).unwrap();
+        insert_function_resources(&dpl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 3);
         let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
         assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
             assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
             let val = current_entry.input.clone().to_serde_json_value();
             assert_eq!(val, serde_json::json!({
-                "depends_on": { "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r2" },
+                "depends_on": { "__DPL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r2" },
                 "function_name": "myfunc",
                 "function_type": "javascript",
                 "function_body": "console.log(1);"
@@ -2792,7 +2792,7 @@ function javascript(myfunc)
 resource hello(r1)
     {"a": $.myfunc['r2']}
 "#;
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
         // r2 already exists in state and has not changed:
         state.resources.insert("r2".to_string(), ResourceInState {
@@ -2801,16 +2801,16 @@ resource hello(r1)
             last_input: serde_json::json!({}),
             ..Default::default()
         });
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 1);
-        insert_function_resources(&dcl, &state, &mut transitionable_resources).unwrap();
+        insert_function_resources(&dpl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 2);
         let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
         assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
             assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
             let val = current_entry.input.clone().to_serde_json_value();
             assert_eq!(val, serde_json::json!({
-                "depends_on": { "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r2" },
+                "depends_on": { "__DPL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r2" },
                 "function_name": "myfunc",
                 "function_type": "javascript",
                 "function_body": "console.log(1);"
@@ -2839,18 +2839,18 @@ resource hello(r2)
 "#;
         // same as the above test, but this tests that if multiple resources call the same function
         // with the same input resource, then that only creates 1 extra resource
-        let mut dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dcl);
+        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 3);
-        insert_function_resources(&dcl, &state,&mut transitionable_resources).unwrap();
+        insert_function_resources(&dpl, &state,&mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 4);
         let fake_resource = transitionable_resources.iter().find(|x| x.get_template_name().unwrap() == FUNCTION_RESOURCE_PREFIX).unwrap();
         assert_matches!(fake_resource, TransitionableResource::Create { current_entry } => {
             assert!(current_entry.resource_name.s.starts_with(FUNCTION_RESOURCE_PREFIX));
             let val = current_entry.input.clone().to_serde_json_value();
             assert_eq!(val, serde_json::json!({
-                "depends_on": { "__DCL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r3" },
+                "depends_on": { "__DPL_PATH_QUERY_PRIVATE_FIELD_DO_NOT_USE__": "$.r3" },
                 "function_name": "myfunc",
                 "function_type": "javascript",
                 "function_body": "console.log(1);"
@@ -2879,11 +2879,11 @@ resource some_template(bar)
   }
 "#;
         let state = StateFile::default();
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
         // we run deploy once on an empty state and it works fine
-        let mut state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        let mut state = perform_update(logger, dpl, state).await.expect("initial deploy should work");
         assert_eq!(state.resources.len(), 2);
         let foo = state.resources.remove("foo").unwrap();
         assert_eq!(foo.last_input, serde_json::json!({"foo": "foo"}));
@@ -2919,11 +2919,11 @@ resource some_template(bar)
   }
 "#;
         let state = StateFile::default();
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
         // we run deploy once on an empty state and it works fine
-        let mut state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        let mut state = perform_update(logger, dpl, state).await.expect("initial deploy should work");
         assert_eq!(state.resources.len(), 2);
         let foo = state.resources.remove("foo").unwrap();
         assert_eq!(foo.last_input, serde_json::json!({"foo": "foo2"}));
@@ -2959,11 +2959,11 @@ resource some_template(bar)
   }
 "#;
         let state = StateFile::default();
-        let dcl = dcl_language::parse_and_validate(document).expect("it should be a valid dcl");
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let logger = VecLogger::leaked();
         log::set_max_level(log::LevelFilter::Trace);
         // we run deploy once on an empty state and it works fine
-        let mut state = perform_update(logger, dcl, state).await.expect("initial deploy should work");
+        let mut state = perform_update(logger, dpl, state).await.expect("initial deploy should work");
         assert_eq!(state.resources.len(), 2);
         let foo = state.resources.remove("foo").unwrap();
         assert_eq!(foo.last_input, serde_json::json!({"foo": "foo2"}));

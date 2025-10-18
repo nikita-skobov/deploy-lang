@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use dcl_language::parse::{Logger, Section, SpannedDiagnostic};
+use deploy_language::parse::{Logger, Section, SpannedDiagnostic};
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, DidOpenTextDocumentParams, Documentation, Hover, HoverContents, HoverParams, HoverProviderCapability, InsertReplaceEdit, MarkupContent, TextEdit, Url};
@@ -83,11 +83,11 @@ impl<'a> Logger for CodeLogger<'a> {
     }
 }
 
-fn check_dcl_file<'a>(diagnostics: &mut Vec<Diagnostic>, valid_sections: &Vec<Section<'a>>, connection: &Connection) {
+fn check_dpl_file<'a>(diagnostics: &mut Vec<Diagnostic>, valid_sections: &Vec<Section<'a>>, connection: &Connection) {
     let clg = CodeLogger { connection };
-    match dcl_language::parse::sections_to_dcl_file_with_logger(valid_sections, clg) {
-        Ok(dcl) => {
-            let spanned_diag = dcl_language::validate::validate_dcl_file(&dcl);
+    match deploy_language::parse::sections_to_dpl_file_with_logger(valid_sections, clg) {
+        Ok(dpl) => {
+            let spanned_diag = deploy_language::validate::validate_dpl_file(&dpl);
             for diag in spanned_diag {
                 diagnostics.push(spanned_diag_to_lsp_diag(diag));
             }
@@ -104,7 +104,7 @@ fn split_sections<'a>(document: &'a str, connection: &Connection) -> (Vec<Diagno
 }
 
 fn split_sections_with_logger<'a>(document: &'a str, logger: impl Logger) -> (Vec<Diagnostic>, Vec<Section<'a>>) {
-    let sections = dcl_language::parse::parse_document_to_sections_with_logger(document, logger);
+    let sections = deploy_language::parse::parse_document_to_sections_with_logger(document, logger);
     let mut out = vec![];
     let mut valid_sections = vec![];
     for section in sections {
@@ -172,10 +172,10 @@ pub fn handle_completion_request_ex<'a>(
     }
     let found_section = found_section?;
     match found_section.typ.s {
-        dcl_language::parse::resource::SECTION_TYPE => {
+        deploy_language::parse::resource::SECTION_TYPE => {
             handle_resource_jsonpath_completion_request(all_valid_sections, found_section, json_path_query, original_pos)
         },
-        dcl_language::parse::template::SECTION_TYPE => {
+        deploy_language::parse::template::SECTION_TYPE => {
             handle_template_jsonpath_completion_request(all_valid_sections, found_section, json_path_query, original_pos)
         }
         _ => None,
@@ -262,16 +262,16 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
 ) -> Option<Vec<CompletionItem>> {
     // we're processing a json path within a resource section.
     // collect json object from all other resource sections:
-    let mut dcl = dcl_language::DclFile::default();
+    let mut dpl = deploy_language::DplFile::default();
     for section in all_valid_sections.iter() {
         if std::ptr::addr_eq(section, found_section) {
             // ignore the found section
             continue;
         }
-        if section.typ == dcl_language::parse::resource::SECTION_TYPE {
-            let _ = dcl_language::parse::resource::parse_resource_section(&mut dcl, section);
-        } else if section.typ == dcl_language::parse::function::SECTION_TYPE {
-            let _ = dcl_language::parse::function::parse_function_section(&mut dcl, section);
+        if section.typ == deploy_language::parse::resource::SECTION_TYPE {
+            let _ = deploy_language::parse::resource::parse_resource_section(&mut dpl, section);
+        } else if section.typ == deploy_language::parse::function::SECTION_TYPE {
+            let _ = deploy_language::parse::function::parse_function_section(&mut dpl, section);
         }
     }
     let resource_name = match json_path_query.segments.first() {
@@ -280,12 +280,12 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
             // its either a resource name, in which case recommend input/output/accum/name
             // or if its a function name, recommend other resource names that can be passed into the function
             let name_str = name.to_string();
-            match dcl.functions.iter().find(|x| x.function_name.as_str() == &name_str) {
+            match dpl.functions.iter().find(|x| x.function_name.as_str() == &name_str) {
                 Some(_) => {
                     // first is a function, return all resource names
                     let completions = get_completion_from_keys(
                         original_pos,
-                        dcl.resources.iter().map(|x| &x.resource_name.s)
+                        dpl.resources.iter().map(|x| &x.resource_name.s)
                     );
                     return Some(completions);
                 }
@@ -297,8 +297,8 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
         }
         None => {
             // if there's no segments, simply give recommendation of all the other resource names + function names:
-            let resource_names = dcl.resources.iter().map(|x| &x.resource_name.s);
-            let function_names = dcl.functions.iter().map(|x| &x.function_name.s);
+            let resource_names = dpl.resources.iter().map(|x| &x.resource_name.s);
+            let function_names = dpl.functions.iter().map(|x| &x.function_name.s);
             let names = resource_names.chain(function_names);
             let completions = get_completion_from_keys(
                 original_pos,
@@ -318,7 +318,7 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
     // TODO: in the future might wish to offer completions for output! can be very useful when the state is a local file...
     //
     // ensure the first segment is referencing a valid resource:
-    let resource = dcl.resources.iter().find(|x| x.resource_name.s == resource_name)?;
+    let resource = dpl.resources.iter().find(|x| x.resource_name.s == resource_name)?;
     // ensure the 2nd segment is referencing input
     let second_segment = json_path_query.segments.get(1)?;
     if second_segment.to_string() != "input" {
@@ -404,7 +404,7 @@ pub fn handle_hover_request<'a>(
     // get the section that contains the hover pos
     let section = doc.parsed.iter().find(|x| line_index >= x.start_line && line_index <= x.end_line)?;
     match section.typ.s {
-        dcl_language::parse::template::SECTION_TYPE => {
+        deploy_language::parse::template::SECTION_TYPE => {
             let body_line = section.body.iter().find(|x| x.line == line_index)?;
             let word = body_line.split_ascii_whitespace().into_iter().find(|x| {
                 let word_start = x.col;
@@ -570,7 +570,7 @@ fn main_loop(
                     known_docs.insert(uri.clone(), new_document.to_string());
                     let diagnostics = if let Some(s) = known_docs.get(&uri) {
                         let (mut diagnostics, valid_sections) = split_sections(s, &connection);
-                        check_dcl_file(&mut diagnostics, &valid_sections, &connection);
+                        check_dpl_file(&mut diagnostics, &valid_sections, &connection);
                         parsed_docs.insert(uri.clone(), ParsedDoc { parsed: valid_sections, doc: s });
                         diagnostics
                     } else {

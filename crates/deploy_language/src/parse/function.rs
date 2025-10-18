@@ -1,6 +1,6 @@
 use str_at_line::StringAtLine;
 
-use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{Section, SpannedDiagnostic}, DplFile};
 
 pub const SECTION_TYPE: &str = "function";
 
@@ -28,7 +28,7 @@ impl FunctionSection {
     }
 }
 
-pub fn parse_function_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+pub fn parse_function_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
     let function_name_and_type = section.parameters
         .ok_or("function section must be followed by the function type and the function name")
         .map_err(|e| SpannedDiagnostic::from_str_at_line(section.typ, e))?;
@@ -47,7 +47,7 @@ pub fn parse_function_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         function_type,
         body,
     };
-    dcl.functions.push(function_section);
+    dpl.functions.push(function_section);
     Ok(())
 }
 
@@ -59,9 +59,9 @@ mod test {
 function javascript(my_func)
   return "abc"
 "#;
-        let mut dcl = crate::parse_and_validate(document).expect("it should be a valid dcl");
-        assert_eq!(dcl.functions.len(), 1);
-        let func = dcl.functions.remove(0);
+        let mut dpl = crate::parse_and_validate(document).expect("it should be a valid dpl");
+        assert_eq!(dpl.functions.len(), 1);
+        let func = dpl.functions.remove(0);
         assert_eq!(func.function_type, "javascript");
         assert_eq!(func.function_name, "my_func");
         assert_eq!(func.get_body(), "return \"abc\"");
@@ -83,9 +83,9 @@ template mytemplate
   create
     echo hi
 "#;
-        let mut dcl = crate::parse_and_validate(document).expect("it should be a valid dcl");
-        assert_eq!(dcl.functions.len(), 1);
-        let func = dcl.functions.remove(0);
+        let mut dpl = crate::parse_and_validate(document).expect("it should be a valid dpl");
+        assert_eq!(dpl.functions.len(), 1);
+        let func = dpl.functions.remove(0);
         assert_eq!(func.function_type, "javascript");
         assert_eq!(func.function_name, "my_func");
         assert_eq!(func.get_body(), r#"let x = 23;

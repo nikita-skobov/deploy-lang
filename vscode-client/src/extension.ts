@@ -6,7 +6,7 @@ import { CompletionList } from 'vscode';
 
 let client: LanguageClient;
 
-// dcl files have sections that are indentation based.
+// dpl files have sections that are indentation based.
 // to determine if user is inside of a javascript function section that looks like
 //```
 //function javascript(func_name)
@@ -88,7 +88,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'dcl' }],
+    documentSelector: [{ scheme: 'file', language: 'dpl' }],
     middleware: {
       provideCompletionItem: async (document, position, context, token, next) => {
         const text = document.getText();
@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  client = new LanguageClient('dclServer', 'DCL Language Server', serverOptions, clientOptions);
+  client = new LanguageClient('dplServer', 'DPL Language Server', serverOptions, clientOptions);
   client.onNotification('custom/log', (logMessage) => {
     console.log(logMessage);
   });

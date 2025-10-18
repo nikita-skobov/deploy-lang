@@ -4,7 +4,7 @@
 use json_with_positions::{CharIterator, Value};
 use str_at_line::StringAtLine;
 
-use crate::{parse::{Section, SpannedDiagnostic}, DclFile};
+use crate::{parse::{Section, SpannedDiagnostic}, DplFile};
 
 pub const SECTION_TYPE: &str = "resource";
 
@@ -18,7 +18,7 @@ pub struct ResourceSection {
     pub input: Value,
 }
 
-pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+pub fn parse_resource_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
     let params = section.parameters
         .ok_or("resource must have a name and a template")
         .map_err(|e| {
@@ -65,13 +65,13 @@ pub fn parse_resource_section<'a>(dcl: &mut DclFile, section: &Section<'a>) -> R
         template_name,
         input,
     };
-    dcl.resources.push(parsed);
+    dpl.resources.push(parsed);
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dcl_file};
+    use crate::parse::{parse_document_to_sections, sections_to_dpl_file};
     use json_with_positions::Value;
 
     #[test]
@@ -81,11 +81,11 @@ resource some_template(my_name)
   {"hello":"world"}"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let dcl = sections_to_dcl_file(&sections).unwrap();
-        assert_eq!(dcl.resources.len(), 1);
-        assert_eq!(dcl.resources[0].resource_name, "my_name");
-        assert_eq!(dcl.resources[0].template_name, "some_template");
-        assert_eq!(dcl.resources[0].input.clone().to_serde_json_value(), serde_json::json!({"hello":"world"}));
+        let dpl = sections_to_dpl_file(&sections).unwrap();
+        assert_eq!(dpl.resources.len(), 1);
+        assert_eq!(dpl.resources[0].resource_name, "my_name");
+        assert_eq!(dpl.resources[0].template_name, "some_template");
+        assert_eq!(dpl.resources[0].input.clone().to_serde_json_value(), serde_json::json!({"hello":"world"}));
     }
 
     #[test]
@@ -104,9 +104,9 @@ resource other_template(other_resource)
 "#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let mut dcl = sections_to_dcl_file(&sections).unwrap();
-        assert_eq!(dcl.resources.len(), 2);
-        let resource = dcl.resources.remove(0);
+        let mut dpl = sections_to_dpl_file(&sections).unwrap();
+        assert_eq!(dpl.resources.len(), 2);
+        let resource = dpl.resources.remove(0);
         assert_eq!(resource.resource_name, "my_name");
         assert_eq!(resource.template_name, "some_template");
         let val = &resource.input["hello"];
@@ -114,7 +114,7 @@ resource other_template(other_resource)
             Value::JsonPath { val, ..  } => assert_eq!(val.s, "$.other_resource.output.thing"),
             _ => panic!("it should be a path query")
         }
-        let resource = dcl.resources.remove(0);
+        let resource = dpl.resources.remove(0);
         assert_eq!(resource.resource_name, "other_resource");
         assert_eq!(resource.template_name, "other_template");
         assert_eq!(resource.input.to_serde_json_value(), serde_json::json!({"a":"b"}));
@@ -127,7 +127,7 @@ resource some_template()
   {"hello":"world"}"#;
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
-        let err = sections_to_dcl_file(&sections).expect_err("it should err");
+        let err = sections_to_dpl_file(&sections).expect_err("it should err");
         assert_eq!(err.message, "resource missing name");
         assert_eq!(err.span.start.line, 1);
         assert_eq!(err.span.end.line, 1);

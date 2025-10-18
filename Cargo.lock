@@ -91,7 +91,7 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "cli_engine",
- "dcl_language",
+ "deploy_language",
  "log",
  "simple_logger",
  "tokio",
@@ -102,7 +102,7 @@ name = "cli_engine"
 version = "0.1.0"
 dependencies = [
  "assert_matches",
- "dcl_language",
+ "deploy_language",
  "hex",
  "hmac-sha256",
  "json_with_positions",
@@ -149,7 +149,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dcl_language"
+name = "deploy_language"
 version = "0.1.0"
 dependencies = [
  "assert_matches",
@@ -392,7 +392,7 @@ dependencies = [
 name = "language_server"
 version = "0.1.0"
 dependencies = [
- "dcl_language",
+ "deploy_language",
  "jsonpath-rust",
  "lsp-server",
  "lsp-types",
