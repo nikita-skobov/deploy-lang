@@ -270,22 +270,40 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
         }
         if section.typ == dcl_language::parse::resource::SECTION_TYPE {
             let _ = dcl_language::parse::resource::parse_resource_section(&mut dcl, section);
+        } else if section.typ == dcl_language::parse::function::SECTION_TYPE {
+            let _ = dcl_language::parse::function::parse_function_section(&mut dcl, section);
         }
     }
     let resource_name = match json_path_query.segments.first() {
-        Some(_) if json_path_query.segments.len() == 1 => {
-            // TODO: there may be cases in the future where it matters what the
-            // first segment is! for now, resources can only refer to other resources so
-            // we assume its referencing a valid resource, and therefore
-            // the only valid completions are input/output/accum/name
-            //
+        Some(name) if json_path_query.segments.len() == 1 => {
             // there's only one json path query segment, that means
-            // recommend input/output/accum/name:
-            return Some(input_output_accum_name_completions());
+            // its either a resource name, in which case recommend input/output/accum/name
+            // or if its a function name, recommend other resource names that can be passed into the function
+            let name_str = name.to_string();
+            match dcl.functions.iter().find(|x| x.function_name.as_str() == &name_str) {
+                Some(_) => {
+                    // first is a function, return all resource names
+                    let completions = get_completion_from_keys(
+                        original_pos,
+                        dcl.resources.iter().map(|x| &x.resource_name.s)
+                    );
+                    return Some(completions);
+                }
+                None => {
+                    // first is a resource, return input/output/accum/name
+                    return Some(input_output_accum_name_completions());
+                }
+            }
         }
         None => {
-            // if there's no segments, simply give recommendation of all the other resource names:
-            let completions = get_completion_from_keys(original_pos, dcl.resources.iter().map(|x| &x.resource_name.s));
+            // if there's no segments, simply give recommendation of all the other resource names + function names:
+            let resource_names = dcl.resources.iter().map(|x| &x.resource_name.s);
+            let function_names = dcl.functions.iter().map(|x| &x.function_name.s);
+            let names = resource_names.chain(function_names);
+            let completions = get_completion_from_keys(
+                original_pos,
+                names
+            );
             return Some(completions);
         }
         // more than 1 segments. fall through to try to dynamically look up the input field
@@ -684,6 +702,99 @@ resource some_template(other_resource)
         res.sort_by(|a, b| a.label.cmp(&b.label));
         assert_eq!(res.remove(0).label, "option1");
         assert_eq!(res.remove(0).label, "option2");
+    }
+
+    #[test]
+    fn can_provide_completions_for_resources_referencing_functions() {
+        let completion_request_line = 1;
+        let completion_request_col = 14;
+        // $. at column 14
+        let document = r#"resource some_template(a)
+   {"func": $.}
+
+function javascript(myfunc)
+  console.log(1);
+
+function javascript(other_func)
+  console.log(1);
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $. so it should recommend resource names and function names, of which theres only 2 function names:
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.remove(0).label, "myfunc");
+        assert_eq!(res.remove(0).label, "other_func");
+    }
+
+    #[test]
+    fn can_provide_completions_for_functions_being_passed_resource_names() {
+        let completion_request_line = 1;
+        let completion_request_col = 21;
+        // $. at column 21
+        let document = r#"resource some_template(a)
+   {"func": $.myfunc.}
+
+function javascript(myfunc)
+  console.log(1);
+
+function javascript(other_func)
+  console.log(1);
+
+resource some_template(other_resource1)
+    {}
+
+resource some_template(other_resource2)
+    {}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $.myfunc. so it should recommend resource names
+        // that this function can call. it should not recommend resource 'a' since that is where the function call is coming from
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.remove(0).label, "other_resource1");
+        assert_eq!(res.remove(0).label, "other_resource2");
+    }
+
+    #[test]
+    fn dont_provide_completions_for_function_calls_with_already_2_segments() {
+        let completion_request_line = 1;
+        let completion_request_col = 32;
+        // $. at column 32
+        let document = r#"resource some_template(a)
+   {"func": $.myfunc.other_func.}
+
+function javascript(myfunc)
+  console.log(1);
+
+function javascript(other_func)
+  console.log(1);
+
+resource some_template(other_resource1)
+    {}
+
+resource some_template(other_resource2)
+    {}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $.myfunc. so it should recommend resource names
+        // that this function can call. it should not recommend resource 'a' since that is where the function call is coming from
+        let res = handle_completion_request_ex(params, &parsed);
+        assert!(res.is_none());
     }
 
     #[test]
