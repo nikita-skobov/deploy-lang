@@ -7,7 +7,19 @@ use crate::{parse::{resource::ResourceSection, SpannedDiagnostic}, DclFile};
 pub fn validate_dcl_file(dcl: &DclFile) -> Vec<SpannedDiagnostic> {
     let mut diagnostics = vec![];
     validate_resources(dcl, &mut diagnostics);
+    validate_functions(dcl, &mut diagnostics);
     diagnostics
+}
+
+pub fn validate_functions(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    for function in dcl.functions.iter() {
+        if function.function_type != "javascript" {
+            diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("unsupported function type '{}' currently only javascript is supported", function.function_type.as_str())));
+        }
+        if function.function_name.s.is_empty() {
+            diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("function name cannot be empty")));
+        }
+    }
 }
 
 pub fn validate_resources(dcl: &DclFile, diagnostics: &mut Vec<SpannedDiagnostic>) {

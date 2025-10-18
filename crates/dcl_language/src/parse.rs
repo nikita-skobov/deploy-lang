@@ -17,6 +17,7 @@ use std::str::Lines;
 pub mod state;
 pub mod template;
 pub mod resource;
+pub mod function;
 
 use str_at_line::{LineCounterIterator, SpannedStr, StrAtLine};
 
@@ -145,6 +146,9 @@ pub fn sections_to_dcl_file_with_logger<'a>(
             }
             template::SECTION_TYPE => {
                 template::parse_template_section(&mut out, &section)?;
+            }
+            function::SECTION_TYPE => {
+                function::parse_function_section(&mut out, &section)?;
             }
             _ => {
                 // silently drop unknown section

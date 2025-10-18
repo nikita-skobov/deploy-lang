@@ -1,6 +1,6 @@
 //! crate for parsing a .dcl file
 
-use crate::parse::{resource::ResourceSection, state::StateSection, template::TemplateSection, SpannedDiagnostic};
+use crate::parse::{function::FunctionSection, resource::ResourceSection, state::StateSection, template::TemplateSection, SpannedDiagnostic};
 
 pub mod parse;
 pub mod validate;
@@ -11,6 +11,7 @@ pub struct DclFile {
     /// a dcl file can only define state once
     pub state: Option<StateSection>,
     pub resources: Vec<ResourceSection>,
+    pub functions: Vec<FunctionSection>,
 }
 
 pub fn parse_and_validate<S: AsRef<str>>(dcl_file_contents: S) -> Result<DclFile, Vec<SpannedDiagnostic>> {
