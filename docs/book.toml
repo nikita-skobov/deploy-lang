@@ -1,0 +1,5 @@
+[book]
+authors = ["nikita-skobov"]
+language = "en"
+src = "src"
+title = "deploy-lang"
