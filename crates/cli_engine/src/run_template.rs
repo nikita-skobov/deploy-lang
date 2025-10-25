@@ -463,10 +463,16 @@ pub async fn run_command(arg_set: ArgSet, command: CliCommand) -> Result<serde_j
     let output = cmd.output().await
         .map_err(|e| format!("failed to invoke command '{}': {:?}", command_name, e))?;
     if !output.status.success() {
+        let cmd = cmd.as_std();
+        let mut command_formatted = command_name.clone();
+        for arg in cmd.get_args() {
+            command_formatted.push(' ');
+            command_formatted.push_str(&arg.to_string_lossy().to_string());
+        }
         let code = output.status.code().unwrap_or(1);
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        return Err(format!("command '{}' exited with non success code '{}'. stdout: {}\nstderr: {}\n", command_name, code, stdout, stderr));
+        return Err(format!("command '{}' exited with non success code '{}'. stdout: {}\nstderr: {}\n", command_formatted, code, stdout, stderr));
     }
     let stdout = String::from_utf8(output.stdout)
         .map_err(|_| format!("command '{}' returned non-utf8 stdout", command_name))?;
