@@ -1388,7 +1388,7 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
-        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         dpl.templates.push(template);
         let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
         assert_eq!(out_state.resources.len(), 1);
@@ -1432,7 +1432,7 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
-        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         template.update = Some(Default::default());
         dpl.templates.push(template);
         let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
@@ -1476,10 +1476,11 @@ mod test {
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
-        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.clone(), ..Default::default() });
+        let cli_cmd_clone = cli_cmd.clone();
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         template.update = Some(Default::default());
         if let Some(upd) = &mut template.update {
-            upd.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
+            upd.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd_clone.into(), ..Default::default() });
         }
         dpl.templates.push(template);
         let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
@@ -1668,7 +1669,7 @@ template xyz
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
         cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
-        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd, ..Default::default() });
+        template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         dpl.templates.push(template);
         let err = perform_update(logger, dpl, state).await.expect_err("it should error");
         assert_eq!(err, "resource 'B' currently references template 'different template' but it was previously deployed with template 'template'");

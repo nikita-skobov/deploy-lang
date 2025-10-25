@@ -211,23 +211,29 @@ pub async fn run_template(
             }
         }
         let should_drop_output = command.directives.iter().any(|d| match d { Directive::DropOutput { .. } => true, _ => false });
-        let arg_set = create_arg_set(resource_name, &command_state, &command.cmd.arg_transforms)
-            .map_err(|e| format!(
-                "resource '{}' failed to create arg set from template '{}' {}[{}]: {}",
-                resource_name,
-                template_name,
-                transition_type,
-                i, e
-            ))?;
-        let val = run_command(arg_set, command.cmd).await
-            .map_err(|e| format!(
-                "resource '{}' failed to run {}[{}] command from template '{}': {}",
-                resource_name,
-                transition_type,
-                i,
-                template_name,
-                e
-            ))?;
+        let val = match command.cmd {
+            deploy_language::parse::template::CmdOrBuiltin::Command(cli_command) => {
+                let arg_set = create_arg_set(resource_name, &command_state, &cli_command.arg_transforms)
+                    .map_err(|e| format!(
+                        "resource '{}' failed to create arg set from template '{}' {}[{}]: {}",
+                        resource_name,
+                        template_name,
+                        transition_type,
+                        i, e
+                    ))?;
+                run_command(arg_set, cli_command).await
+                    .map_err(|e| format!(
+                        "resource '{}' failed to run {}[{}] command from template '{}': {}",
+                        resource_name,
+                        transition_type,
+                        i,
+                        template_name,
+                        e
+                    ))?
+            }
+            deploy_language::parse::template::CmdOrBuiltin::Builtin(_) => todo!("builtins not supported yet"),
+        };
+
         // TODO: allow user to define how values are merged via directives...
         // for now we will use default behavior which will be merging objects
         // or if its not an object, then we will take the latest value

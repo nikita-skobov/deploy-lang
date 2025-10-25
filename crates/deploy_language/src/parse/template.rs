@@ -33,7 +33,35 @@ pub struct Transition {
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct CliCommandWithDirectives {
     pub directives: Vec<Directive>,
-    pub cmd: CliCommand,
+    pub cmd: CmdOrBuiltin,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CmdOrBuiltin {
+    Command(CliCommand),
+    Builtin(()),
+}
+
+impl CmdOrBuiltin {
+    #[cfg(debug_assertions)]
+    pub fn as_command(&self) -> &CliCommand {
+        match self {
+            CmdOrBuiltin::Command(cli_command) => cli_command,
+            CmdOrBuiltin::Builtin(_) => panic!("it was a builtin but caller assumed it was a cli command")
+        }
+    }
+}
+
+impl Default for CmdOrBuiltin {
+    fn default() -> Self {
+        Self::Command(Default::default())
+    }
+}
+
+impl From<CliCommand> for CmdOrBuiltin {
+    fn from(value: CliCommand) -> Self {
+        Self::Command(value)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -462,7 +490,7 @@ pub fn parse_command<'a>(
     }
 
     let cmd = CliCommand { command, prefix_args, arg_transforms };
-    Ok(Some(CliCommandWithDirectives { directives, cmd }))
+    Ok(Some(CliCommandWithDirectives { directives, cmd: cmd.into() }))
 }
 
 #[cfg(test)]
@@ -513,7 +541,7 @@ template something
         let mut sections = parse_document_to_sections(document);
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
-        assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 3);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.as_command().arg_transforms.len(), 3);
     }
 
     #[test]
@@ -529,6 +557,20 @@ template something
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 3);
+    }
+
+    #[test]
+    fn can_parse_builtin_commands() {
+        let document = r#"
+template something
+  create
+    /strcat []
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        // assert_eq!()
     }
 
     #[test]
@@ -601,19 +643,19 @@ resource xyz(resourceA)
         let mut template = dpl.templates.remove(0);
         assert_eq!(template.create.directives.len(), 0);
         assert_eq!(template.create.cli_commands.len(), 1);
-        assert_eq!(template.create.cli_commands[0].cmd.command, "echo");
+        assert_eq!(template.create.cli_commands[0].cmd.as_command().command, "echo");
         let mut update = template.update.take().expect("it should have an update section");
         assert_eq!(update.directives.len(), 0);
         assert_eq!(update.cli_commands.len(), 2);
         let first = update.cli_commands.remove(0);
-        assert_eq!(first.cmd.arg_transforms.len(), 1);
-        assert_matches!(&first.cmd.arg_transforms[0], ArgTransform::Add(x, y) => {
+        assert_eq!(first.cmd.as_command().arg_transforms.len(), 1);
+        assert_matches!(&first.cmd.as_command().arg_transforms[0], ArgTransform::Add(x, y) => {
             assert_eq!(x.s, "abc");
             assert_eq!(y.to_string(), "$outputsomeval");
         });
         let next = update.cli_commands.remove(0);
-        assert_eq!(next.cmd.arg_transforms.len(), 1);
-        assert_matches!(&next.cmd.arg_transforms[0], ArgTransform::Add(x, y) => {
+        assert_eq!(next.cmd.as_command().arg_transforms.len(), 1);
+        assert_matches!(&next.cmd.as_command().arg_transforms[0], ArgTransform::Add(x, y) => {
             assert_eq!(x.s, "xyz");
             assert_eq!(y.to_string(), "$accum");
         });
@@ -663,7 +705,7 @@ template something
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputotherThing");
         });
-        assert_eq!(next.cmd.command.s, "ls");
+        assert_eq!(next.cmd.as_command().command.s, "ls");
     }
 
     #[test]
@@ -714,9 +756,9 @@ template something
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 3);
-        assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.arg_transforms.len(), 2);
-        assert_eq!(dpl.templates[0].create.cli_commands[1].cmd.arg_transforms.len(), 2);
-        assert_eq!(dpl.templates[0].create.cli_commands[2].cmd.arg_transforms.len(), 2);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.as_command().arg_transforms.len(), 2);
+        assert_eq!(dpl.templates[0].create.cli_commands[1].cmd.as_command().arg_transforms.len(), 2);
+        assert_eq!(dpl.templates[0].create.cli_commands[2].cmd.as_command().arg_transforms.len(), 2);
     }
 
     #[test]
@@ -750,8 +792,8 @@ template aws_lambda_function
         let mut update_section = template.update.unwrap();
         assert_eq!(update_section.cli_commands.len(), 2);
         let first_command = update_section.cli_commands.remove(0);
-        assert_eq!(first_command.cmd.command.s, "aws");
-        assert_eq!(first_command.cmd.prefix_args.join(" "), "lambda update-function-code");
+        assert_eq!(first_command.cmd.as_command().command.s, "aws");
+        assert_eq!(first_command.cmd.as_command().prefix_args.join(" "), "lambda update-function-code");
         assert_matches!(&first_command.directives[0], Directive::Diff { query, .. } => {
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputzipfile");
@@ -760,10 +802,10 @@ template aws_lambda_function
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputfunctionname");
         });
-        assert!(first_command.cmd.arg_transforms.is_empty());
+        assert!(first_command.cmd.as_command().arg_transforms.is_empty());
         let second_command = update_section.cli_commands.remove(0);
-        assert_eq!(second_command.cmd.command.s, "aws");
-        assert_eq!(second_command.cmd.prefix_args.join(" "), "lambda update-function-configuration");
+        assert_eq!(second_command.cmd.as_command().command.s, "aws");
+        assert_eq!(second_command.cmd.as_command().prefix_args.join(" "), "lambda update-function-configuration");
         assert_matches!(&second_command.directives[0], Directive::Same { query, .. } => {
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputzipfile");
@@ -772,11 +814,11 @@ template aws_lambda_function
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputfunctionname");
         });
-        assert_eq!(second_command.cmd.arg_transforms.len(), 2);
-        assert_matches!(&second_command.cmd.arg_transforms[0], ArgTransform::Destructure(d) => {
+        assert_eq!(second_command.cmd.as_command().arg_transforms.len(), 2);
+        assert_matches!(&second_command.cmd.as_command().arg_transforms[0], ArgTransform::Destructure(d) => {
             assert_eq!(d.to_string(), "$input");
         });
-        assert_matches!(&second_command.cmd.arg_transforms[1], ArgTransform::Remove(r) => {
+        assert_matches!(&second_command.cmd.as_command().arg_transforms[1], ArgTransform::Remove(r) => {
             assert_eq!(r, "zip-file");
         });
     }
