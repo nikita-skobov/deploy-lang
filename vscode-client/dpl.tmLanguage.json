@@ -106,6 +106,28 @@
               }
             },
             {
+              "begin": "^(\\s+)(/\\w+)(\\s)?([^#]+)?",
+              "end": "(?=^\\1\\S|^\\s+(create|update|delete)\\b|^$)",
+              "beginCaptures": {
+                "2": { "name": "entity.name.function.dpl" },
+                "4": {
+                  "patterns": [
+                    {
+                      "include": "#json"
+                    }
+                  ]
+                }
+              },
+              "patterns": [
+                {
+                  "include": "#comment"
+                },
+                {
+                  "include": "#json"
+                }
+              ]
+            },
+            {
               "begin": "^(\\s+)(\\w+)(\\s)?([^#]+)?",
               "end": "(?=^\\1\\S|^\\s+(create|update|delete)\\b|^$)",
               "beginCaptures": {
