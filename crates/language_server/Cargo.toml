@@ -13,3 +13,4 @@ deploy_language = { workspace = true }
 str_at_line = { workspace = true }
 jsonpath-rust = { workspace = true }
 json_with_positions = { workspace = true }
+enumdoc = { workspace = true }

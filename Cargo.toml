@@ -17,3 +17,4 @@ jsonpath-rust = "1.0.4"
 json_with_positions = { path = "./crates/json_with_positions" }
 log = {  version = "0.4.28", features = ["std"] }
 tokio = { version = "1.46.1", features = ["full"]}
+enumdoc = { path = "./crates/enumdoc" }

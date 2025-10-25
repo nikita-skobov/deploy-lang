@@ -153,6 +153,7 @@ name = "deploy_language"
 version = "0.1.0"
 dependencies = [
  "assert_matches",
+ "enumdoc",
  "json_with_positions",
  "jsonpath-rust",
  "serde",
@@ -409,6 +410,7 @@ name = "language_server"
 version = "0.1.0"
 dependencies = [
  "deploy_language",
+ "enumdoc",
  "json_with_positions",
  "jsonpath-rust",
  "lsp-server",

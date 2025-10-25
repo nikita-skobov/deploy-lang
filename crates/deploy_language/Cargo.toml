@@ -9,6 +9,7 @@ serde_json = { workspace = true }
 jsonpath-rust = { workspace = true }
 str_at_line = { workspace = true }
 json_with_positions = { workspace = true }
+enumdoc = { workspace = true }
 
 [dev-dependencies]
 assert_matches = "1.5.0"

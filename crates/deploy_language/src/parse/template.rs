@@ -1,3 +1,4 @@
+use enumdoc::enumdoc_derive::Enumdoc;
 use json_with_positions::{CharIterator, Value};
 use str_at_line::{StrAtLine, StringAtLine};
 
@@ -121,6 +122,7 @@ pub enum ArgTransform {
     Add(StringAtLine, jsonpath_rust::parser::model::JpQuery),
 }
 
+#[derive(Enumdoc, Debug, PartialEq, Clone)]
 /// a directive consists of an @ symbol
 /// a keyword "kw" in all variants that is used to differentiate the type of directive.
 /// and is followed by args which are specific to each directive.
@@ -128,7 +130,6 @@ pub enum ArgTransform {
 /// and the kw is used to get the string span of the directive.
 /// a directive must be on a single line, and therefore if we wish to show
 /// diagnostics on an invalid directive we can infer the line from the "kw"
-#[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
 pub enum Directive {
     /// only relevant to update commands: a diff directive

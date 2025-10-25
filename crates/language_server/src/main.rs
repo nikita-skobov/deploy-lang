@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::error::Error;
 
+use deploy_language::parse::template::Directive;
 use deploy_language::parse::{Logger, Section, SpannedDiagnostic};
+use enumdoc::Enumdoc;
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, DidOpenTextDocumentParams, Documentation, Hover, HoverContents, HoverParams, HoverProviderCapability, InsertReplaceEdit, MarkupContent, TextEdit, Url};
@@ -444,56 +446,7 @@ pub fn handle_hover_request<'a>(
             })?;
             if word.s.starts_with('@') {
                 let (_, directive_type) = word.s.split_once("@")?;
-                let value = match directive_type.trim() {
-                    "dropoutput" => r#"causes the command's output to be ignored entirely and not merged into the accumulator.
-this directive doesnt take any args. it should just be the directive keyword eg:
-```text
-@dropoutput
-```"#,
-                    "accum" => r#"insert a value into the accumulator after this command runs. the accum_path can leave out the $.accum since it's implied
-the value is going into the accumulator. the src_path can be a json path starting with $.input $.name $.accum or $.output.
-the syntax is a json array with 2 values. the first is the src_path of where to read from
-and the 2nd is the accum_path which is where the value will be inserted to
-eg
-```text
-@accum [$.accum.somefield, $.nested.fieldvalue]
-```
-the above example would run the command, merge into the accumulator,
-then after it merges, it reads the value of the accumulator "somefield"
-and it inserts that value again into the accumulator but at a different path "nested.fieldvalue"
-                    "#,
-                    "diff" => r#"only relevant to update commands: a diff directive
-requires that the value the query resolves to must be different
-than the same value from the last time this resource was transitioned.
-authors can specify multiple queries in one directives optionally by placing them in a json array
-such as `[$.a, $.b]`, which are ANDed together.
-multiple diff and same directives are ORed together
-eg if an author specifies 
-
-```text
-@diff [$.a, $.b]
-@diff $.c
-```
-then the command below this directive will be ran if the value of $.c is different from prev and current
-OR if the value of $.a AND the value of $.b is different from prev and current
-                    "#,
-                    "same" => r#"only relevant to update commands: a same directitve
-requires that the value the query resolves to must be the same
-as the value from the last time this resource was transitioned.
-authors can specify multiple quries, which are ANDed together.
-multiple diff and same directives are ORed together
-eg if an author specifies
-
-```text
-@same [$.a, $.b]
-@same $.c
-```
-
-then the command below this directive will be ran if the value of $.c is the same in prev and current
-OR if the value of $.a AND the value of $.b is the same in prev and current
-                    "#,
-                    _ => return None,
-                }.to_string();
+                let value = Directive::variant_doc(directive_type.trim())?.to_string();
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: lsp_types::MarkupKind::Markdown,
@@ -1082,7 +1035,7 @@ template ewqew
     echo
 "#.to_string();
         let (_, sections) = split_sections_with_logger(&document, ());
-        let expected_hint = "causes the command's output to be ignored entirely";
+        let expected_hint = "causes the command\\'s output to be ignored entirely";
         let expected_range = 0..expected_hint.len();
         let parsed = ParsedDoc {
             doc: &document,
