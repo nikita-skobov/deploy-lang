@@ -18,6 +18,7 @@ pub mod state;
 pub mod template;
 pub mod resource;
 pub mod function;
+pub mod constant;
 
 use str_at_line::{LineCounterIterator, SpannedStr, StrAtLine};
 
@@ -149,6 +150,9 @@ pub fn sections_to_dpl_file_with_logger<'a>(
             }
             function::SECTION_TYPE => {
                 function::parse_function_section(&mut out, &section)?;
+            }
+            constant::SECTION_TYPE => {
+                constant::parse_const_section(&mut out, &section)?;
             }
             _ => {
                 // silently drop unknown section

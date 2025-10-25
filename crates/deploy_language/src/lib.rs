@@ -1,6 +1,6 @@
 //! crate for parsing a .dpl file
 
-use crate::parse::{function::FunctionSection, resource::ResourceSection, state::StateSection, template::TemplateSection, SpannedDiagnostic};
+use crate::parse::{constant::ConstSection, function::FunctionSection, resource::ResourceSection, state::StateSection, template::TemplateSection, SpannedDiagnostic};
 
 pub mod parse;
 pub mod validate;
@@ -12,6 +12,7 @@ pub struct DplFile {
     pub state: Option<StateSection>,
     pub resources: Vec<ResourceSection>,
     pub functions: Vec<FunctionSection>,
+    pub constants: Vec<ConstSection>,
 }
 
 pub fn parse_and_validate<S: AsRef<str>>(dpl_file_contents: S) -> Result<DplFile, Vec<SpannedDiagnostic>> {
