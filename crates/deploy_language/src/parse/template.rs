@@ -1,3 +1,4 @@
+use json_with_positions::{CharIterator, Value};
 use str_at_line::{StrAtLine, StringAtLine};
 
 use crate::{parse::{Section, SpannedDiagnostic}, DplFile};
@@ -39,7 +40,7 @@ pub struct CliCommandWithDirectives {
 #[derive(Debug, PartialEq, Clone)]
 pub enum CmdOrBuiltin {
     Command(CliCommand),
-    Builtin(()),
+    Builtin(Builtin),
 }
 
 impl CmdOrBuiltin {
@@ -48,6 +49,13 @@ impl CmdOrBuiltin {
         match self {
             CmdOrBuiltin::Command(cli_command) => cli_command,
             CmdOrBuiltin::Builtin(_) => panic!("it was a builtin but caller assumed it was a cli command")
+        }
+    }
+    #[cfg(debug_assertions)]
+    pub fn as_builtin(&self) -> &Builtin {
+        match self {
+            CmdOrBuiltin::Command(_) => panic!("it was a command but caller assumed it was a builtin"),
+            CmdOrBuiltin::Builtin(builtin) => builtin,
         }
     }
 }
@@ -62,6 +70,20 @@ impl From<CliCommand> for CmdOrBuiltin {
     fn from(value: CliCommand) -> Self {
         Self::Command(value)
     }
+}
+
+impl From<Builtin> for CmdOrBuiltin {
+    fn from(value: Builtin) -> Self {
+        Self::Builtin(value)
+    }
+}
+
+/// builtins are commands that deploy-lang can run without a shell, these are built into the deploy-lang interpreter
+/// unlike CliCommands, builtin types are known ahead of time, and are parsed more strictly. CliCommands allow for arbitrary execution,
+/// whereas builtins operate only on json values in memory
+#[derive(Debug, PartialEq, Clone)]
+pub enum Builtin {
+    Strcat { kw: StringAtLine, values: Vec<Value> }
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -410,6 +432,57 @@ pub fn parse_all_directives<'a>(
     Ok(out)
 }
 
+pub fn parse_builtin_command<'a>(
+    command: StringAtLine,
+    directives: Vec<Directive>,
+    indent_prefix: String,
+    current_line: StringAtLine,
+    lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
+) -> Result<Option<CliCommandWithDirectives>, SpannedDiagnostic> {
+    // first, collect all lines whose whitespace is longer than the command's leading whitespace.
+    let mut builtin_arg_lines = vec![];
+    if !current_line.as_str().is_empty() {
+        builtin_arg_lines.push(current_line);
+    }
+    loop {
+        match lines.peek() {
+            Some(l) => {
+                let current_prefix = get_prefix(l.s);
+                if current_prefix.len() > indent_prefix.len() {
+                    // take it off the iterator:
+                    let out = l.trim();
+                    let _ = lines.next();
+                    builtin_arg_lines.push(out.to_owned());
+                } else {
+                    break;
+                }   
+            }
+            None => break
+        };
+    }
+    // now interpret the parsed lines depending on builtin type:
+    let cmd = match command.as_str() {
+        "/strcat" => {
+            // parse as a json value, where it must be an array:
+            let mut char_iter = CharIterator::new(
+                builtin_arg_lines.iter().map(|x| x.as_borrowed())
+            ).peekable();
+            let json_arr = json_with_positions::parse_json_value_from_iter_no_recursion(&mut char_iter)
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(&command, format!("/strcat builtin failed to parse: {}", e)))?;
+            let values = match json_arr {
+                Value::Array { val, .. } => val,
+                x => return Err(SpannedDiagnostic::from_str_at_line(&command, format!("/strcat builtin must be followed be a json array, instead found '{:?}'", x)))
+            };
+            CmdOrBuiltin::Builtin(Builtin::Strcat { kw: command, values })
+        }
+        x => return Err(SpannedDiagnostic::from_str_at_line(&command, format!("unknown builtin '{}'", x)))
+    };
+    Ok(Some(CliCommandWithDirectives {
+        directives,
+        cmd,
+    }))
+}
+
 pub fn parse_command<'a>(
     lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
 ) -> Result<Option<CliCommandWithDirectives>, SpannedDiagnostic> {
@@ -440,6 +513,9 @@ pub fn parse_command<'a>(
         None => (command_line, Default::default()),
     };
     let command = command.trim().to_owned();
+    if command.s.starts_with("/") {
+        return parse_builtin_command(command, directives, indent_prefix, prefix_args.to_owned(), lines);
+    }
     let prefix_args: Vec<_> = prefix_args.split_ascii_whitespace().map(|x| x.to_owned()).collect();
     let mut arg_transforms = vec![];
     loop {
@@ -495,8 +571,9 @@ pub fn parse_command<'a>(
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dpl_file, template::{ArgTransform, Directive}};
+    use crate::parse::{parse_document_to_sections, sections_to_dpl_file, template::{ArgTransform, Builtin, Directive}};
     use assert_matches::assert_matches;
+    use json_with_positions::Value;
 
     #[test]
     fn should_error_on_invalid_arg_transform() {
@@ -570,7 +647,86 @@ template something
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
-        // assert_eq!()
+        assert_matches!(dpl.templates[0].create.cli_commands[0].cmd.as_builtin(), Builtin::Strcat { values, .. } => {
+            assert_eq!(values.len(), 0);
+        });
+    }
+
+    #[test]
+    fn can_parse_builtin_commands_multi_line() {
+        let document = r#"
+template something
+  create
+    /strcat [
+     "a", "b", # comment here
+     # comment
+     $.input.something
+     ]
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        assert_matches!(dpl.templates[0].create.cli_commands[0].cmd.as_builtin(), Builtin::Strcat { values, .. } => {
+            assert_eq!(values.len(), 3);
+            assert_eq!(&values[0].clone().to_serde_json_value(), &serde_json::json!("a"));
+            assert_eq!(&values[1].clone().to_serde_json_value(), &serde_json::json!("b"));
+            assert_matches!(&values[2], Value::JsonPath { val, .. } => {
+                assert_eq!(val.as_str(), "$.input.something");
+            });
+        });
+    }
+
+    #[test]
+    fn can_parse_multiple_builtin_commands_multi_line() {
+        let document = r#"
+template something
+  create
+    /strcat [
+     "a", "b", # comment here
+     # comment
+     $.input.something
+     ]
+    # comment here
+    /strcat []
+    # comment here
+    echo hello
+      ... $.input
+    /strcat ["a"]
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 4);
+        assert_matches!(dpl.templates[0].create.cli_commands[0].cmd.as_builtin(), Builtin::Strcat { values, .. } => {
+            assert_eq!(values.len(), 3);
+            assert_eq!(&values[0].clone().to_serde_json_value(), &serde_json::json!("a"));
+            assert_eq!(&values[1].clone().to_serde_json_value(), &serde_json::json!("b"));
+            assert_matches!(&values[2], Value::JsonPath { val, .. } => {
+                assert_eq!(val.as_str(), "$.input.something");
+            });
+        });
+        assert_matches!(dpl.templates[0].create.cli_commands[1].cmd.as_builtin(), Builtin::Strcat { values, .. } => {
+            assert_eq!(values.len(), 0);
+        });
+        assert_eq!(dpl.templates[0].create.cli_commands[2].cmd.as_command().command, "echo");
+        assert_matches!(dpl.templates[0].create.cli_commands[3].cmd.as_builtin(), Builtin::Strcat { values, .. } => {
+            assert_eq!(values.len(), 1);
+        });
+    }
+
+    #[test]
+    fn strcat_builtin_must_be_json_arr() {
+        let document = r#"
+template something
+  create
+    /strcat
+      {}
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let diag = sections_to_dpl_file(&valid_sections).expect_err("it should err");
+        assert!(diag.message.starts_with("/strcat builtin must be followed be a json array"));
     }
 
     #[test]

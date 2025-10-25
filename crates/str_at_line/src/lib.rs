@@ -85,6 +85,9 @@ impl StringAtLine {
     pub fn as_str<'a>(&'a self) -> &'a str {
         self.s.as_str()
     }
+    pub fn as_borrowed<'a>(&'a self) -> StrAtLine<'a> {
+        StrAtLine { s: &self.s, line: self.line, col: self.col }
+    }
 }
 
 impl From<&str> for StringAtLine {
