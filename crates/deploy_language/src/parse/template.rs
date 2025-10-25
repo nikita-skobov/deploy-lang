@@ -79,11 +79,34 @@ impl From<Builtin> for CmdOrBuiltin {
     }
 }
 
+#[derive(Enumdoc, Debug, PartialEq, Clone)]
 /// builtins are commands that deploy-lang can run without a shell, these are built into the deploy-lang interpreter
 /// unlike CliCommands, builtin types are known ahead of time, and are parsed more strictly. CliCommands allow for arbitrary execution,
 /// whereas builtins operate only on json values in memory
-#[derive(Debug, PartialEq, Clone)]
 pub enum Builtin {
+    /// - input: json array
+    /// - output: string
+    /// 
+    /// strcat reads every value in the json array provided, and concatenates them into an output string.
+    /// if the json array contains json paths, it looks up the value at that path, for example:
+    /// ```text
+    /// /strcat ["prefix-", $.input.somefield, "-suffix"]
+    /// ```
+    /// would return a string "prefix-somevalue-suffix" where the input of the resource
+    /// had `{"somefield": "somevalue"}`
+    /// 
+    /// strcat errors if any of the values in the json array is an object, or array, for example this is invalid:
+    /// ```text
+    /// /strcat [{}, []]
+    /// ```
+    /// 
+    /// similarly, strcat errors if the json path evaluates to an array or an object, for example this is invalid:
+    /// ```text
+    /// /strcat [$.input]
+    /// ```
+    /// because the `$.input` evaluates to an object.
+    /// 
+    /// strcat is valid with an empty array, in which case it returns an empty string
     Strcat { kw: StringAtLine, values: Vec<Value> }
 }
 

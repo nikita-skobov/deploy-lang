@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use deploy_language::parse::template::Directive;
+use deploy_language::parse::template::{Builtin, Directive};
 use deploy_language::parse::{Logger, Section, SpannedDiagnostic};
 use enumdoc::Enumdoc;
 use lsp_server::{Connection, Message, Response};
@@ -444,18 +444,22 @@ pub fn handle_hover_request<'a>(
                 let word_end = word_start + x.s.chars().count();
                 column >= word_start && column <= word_end
             })?;
-            if word.s.starts_with('@') {
+            let hover_value = if word.s.starts_with('@') {
                 let (_, directive_type) = word.s.split_once("@")?;
-                let value = Directive::variant_doc(directive_type.trim())?.to_string();
-                return Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: lsp_types::MarkupKind::Markdown,
-                        value: value,
-                    }),
-                    range: None,
-                });
-            }
-            None
+                Directive::variant_doc(directive_type.trim())?.to_string()
+            } else if word.s.starts_with('/') {
+                let (_, builtin_type) = word.s.split_once("/")?;
+                Builtin::variant_doc(builtin_type.trim())?.to_string()
+            } else {
+                return None
+            };
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: lsp_types::MarkupKind::Markdown,
+                    value: hover_value,
+                }),
+                range: None,
+            });
         }
         // other section types not supported for now
         _ => None,
@@ -1075,6 +1079,58 @@ template ewqew
 
         // the space between the directive and the comment shouldnt give any hint
         let params = hover_params_with_position(3, 16);
+        let x = handle_hover_request(params, &parsed);
+        assert!(x.is_none());
+    }
+
+    #[test]
+    fn can_give_hover_hints_for_builtins() {
+        let document = r#"
+template ewqew
+  create
+    /strcat []
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let expected_hint = "- input: json array\n- output: string\n\nstrcat reads";
+        let expected_range = 0..expected_hint.len();
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // its before the @ so it shouldnt give anything
+        let params = hover_params_with_position(3, 3);
+        let x = handle_hover_request(params, &parsed);
+        assert!(x.is_none());
+
+        // the / character should give a hint
+        let params = hover_params_with_position(3, 4);
+        let x = handle_hover_request(params, &parsed).unwrap();
+        let markup = match x.contents {
+            HoverContents::Markup(markup_content) => markup_content,
+            _ => panic!("wrong hover content type")
+        };
+        assert_eq!(markup.value.get(expected_range.clone()).unwrap(), expected_hint);
+
+        // in the middle of the builtin should give a hint
+        let params = hover_params_with_position(3, 9);
+        let x = handle_hover_request(params, &parsed).unwrap();
+        let markup = match x.contents {
+            HoverContents::Markup(markup_content) => markup_content,
+            _ => panic!("wrong hover content type")
+        };
+        assert_eq!(markup.value.get(expected_range.clone()).unwrap(), expected_hint);
+
+        // the last character should still give a hint
+        let params = hover_params_with_position(3, 11);
+        let x = handle_hover_request(params, &parsed).unwrap();
+        let markup = match x.contents {
+            HoverContents::Markup(markup_content) => markup_content,
+            _ => panic!("wrong hover content type")
+        };
+        assert_eq!(markup.value.get(expected_range.clone()).unwrap(), expected_hint);
+
+        // the space between the builtin and its input should not give a hint
+        let params = hover_params_with_position(3, 12);
         let x = handle_hover_request(params, &parsed);
         assert!(x.is_none());
     }
