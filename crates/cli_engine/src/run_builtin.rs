@@ -58,8 +58,11 @@ pub fn run_builtin(
         },
         Builtin::Random { len, .. } => {
             use std::iter::repeat_with;
+            const CHARS: &[u8] = b"abcdef0123456789";
             // TODO: support other random types dependning on r_type
-            let s: String = repeat_with(|| rng.alphanumeric()).take(len).collect();
+            let s: String = repeat_with(|| {
+                *rng.choice(CHARS).unwrap() as char
+            }).take(len).collect();
             serde_json::Value::String(s)
         }
     };
