@@ -3,3 +3,7 @@ authors = ["nikita-skobov"]
 language = "en"
 src = "src"
 title = "deploy-lang"
+
+[output.html]
+git-repository-url = "https://github.com/nikita-skobov/deploy-lang"
+
