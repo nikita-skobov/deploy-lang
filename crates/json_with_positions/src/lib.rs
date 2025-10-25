@@ -21,6 +21,12 @@ pub enum Value {
     JsonPath { pos: Position, val: StringAtLine },
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Value::Null { pos: Position::default(), val: () }
+    }
+}
+
 impl Value {
     /// converts a value into a serde json value
     pub fn to_serde_json_value(self) -> serde_json::Value {
