@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Index, str::{Chars, Lines}};
+use std::{collections::HashMap, f64, ops::Index, str::{Chars, Lines}};
 
 use str_at_line::{LineCounterIterator, StrAtLine, StringAtLine};
 
@@ -177,6 +177,38 @@ pub fn replace_self_recursively(
     }
 }
 
+pub fn convert_from_serde_value_recursively(
+    serde_json_val: serde_json::Value
+) -> Value {
+    let pos = Position::default();
+    match serde_json_val {
+        serde_json::Value::Null => Value::Null { pos, val: () },
+        serde_json::Value::Bool(b) => Value::Bool { pos, val: b },
+        serde_json::Value::Number(number) => Value::Number { pos, val: Number::from_serde_num(number) },
+        serde_json::Value::String(s) => {
+            let mut val = StringAtLine::default();
+            val.s = s;
+            Value::String { pos, val }
+        },
+        serde_json::Value::Array(values) => {
+            let mut out_arr = Vec::with_capacity(values.len());
+            for val in values {
+                out_arr.push(convert_from_serde_value_recursively(val));
+            }
+            Value::Array { pos, val: out_arr }
+        }
+        serde_json::Value::Object(map) => {
+            let mut out_map = HashMap::with_capacity(map.len());
+            for (key, val) in map {
+                let mut s = StringAtLine::default();
+                s.s = key;
+                out_map.insert(s, convert_from_serde_value_recursively(val));
+            }
+            Value::Object { pos, val: out_map }
+        }
+    }
+}
+
 /// converts a value into a serde json value recursively, converting any
 /// json path queries to an object representation via the key `PATH_QUERY_KEY`
 pub fn convert_to_serde_value_recursively(dynamic_json_val: Value) -> serde_json::Value {
@@ -269,6 +301,25 @@ impl Number {
         match self {
             Number::Float(f) => *f as i64,
             Number::Int(i) => *i,
+        }
+    }
+    pub fn from_serde_num(sn: serde_json::Number) -> Self {
+        if sn.is_i64() {
+            let n = sn.as_i64().unwrap_or_default();
+            Self::Int(n)
+        } else {
+            let f = match sn.as_f64() {
+                Some(f) => f,
+                None => match sn.as_i64() {
+                    Some(i) => return Self::Int(i),
+                    _ => {
+                        // number was not an int, not a float
+                        // return NaN :shrug:
+                        return Self::Float(f64::NAN)
+                    }
+                }
+            };
+            Self::Float(f)
         }
     }
 }
@@ -918,6 +969,36 @@ mod test {
         let value = parse_json_value("$.input.zipfile").unwrap();
         assert_matches!(value, Value::JsonPath { val, .. } => {
             assert_eq!(val.s, "$.input.zipfile");
+        });
+    }
+
+    #[test]
+    fn can_convert_from_serde() {
+        let serde_val = serde_json::json!({"a": 1.2});
+        let val = convert_from_serde_value_recursively(serde_val);
+        assert_matches!(val, Value::Object { val, .. } => {
+            assert_eq!(val.len(), 1);
+            assert_matches!(&val["a"], Value::Number { val, .. } => {
+                assert_matches!(val, Number::Float(1.2));
+            });
+        });
+
+        let serde_val = serde_json::json!({"a": 0});
+        let val = convert_from_serde_value_recursively(serde_val);
+        assert_matches!(val, Value::Object { val, .. } => {
+            assert_eq!(val.len(), 1);
+            assert_matches!(&val["a"], Value::Number { val, .. } => {
+                assert_matches!(val, Number::Int(0));
+            });
+        });
+
+        let serde_val = serde_json::json!({"a": -2});
+        let val = convert_from_serde_value_recursively(serde_val);
+        assert_matches!(val, Value::Object { val, .. } => {
+            assert_eq!(val.len(), 1);
+            assert_matches!(&val["a"], Value::Number { val, .. } => {
+                assert_matches!(val, Number::Int(-2));
+            });
         });
     }
 
