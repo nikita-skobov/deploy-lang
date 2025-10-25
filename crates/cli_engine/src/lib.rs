@@ -1867,9 +1867,9 @@ template xyz
     echo hello
   update
     echo
-      abc $.output.someval
+      --abc $.output.someval
     echo
-      xyz $.accum
+      --xyz $.accum
 
 resource xyz(resourceA)
     {}
@@ -2044,9 +2044,9 @@ template xyz
     echo hello
   update
     echo
-      abc $.output.someval
+      --abc $.output.someval
     echo
-      xyz $.output
+      --xyz $.output
 
 resource xyz(resourceA)
     {}
@@ -2104,7 +2104,7 @@ resource xyz(resourceA)
         let resource_a = out_state.resources.get("resourceA").unwrap();
         // the update runs a command
         // that references accum. accum's initial state should be the same as last output
-        assert_eq!(resource_a.output.as_str().unwrap(), "--abc {\"someval\":\"somevalue\"}\n");
+        assert_eq!(resource_a.output.as_str().unwrap(), "abc {\"someval\":\"somevalue\"}\n");
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["updating 'resourceA'", "resource 'resourceA' OK"]);
     }
@@ -2119,7 +2119,7 @@ template xyz
     echo hello
   delete
     rm
-      force $.output.filename
+      --force $.output.filename
 "#;
         let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();

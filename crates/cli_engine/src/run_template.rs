@@ -6,10 +6,24 @@ use log::Log;
 use serde_json::Map;
 use tokio::process::Command;
 
-pub type ArgSet = serde_json::Map<String, serde_json::Value>;
+pub type ArgSet = Vec<ArgInstruction>;
 
 struct Gerund<'a> {
     pub verb: &'a str,
+}
+
+#[derive(Debug)]
+pub enum ArgOptType {
+    Long,
+    Short,
+    Verbatim,
+}
+
+#[derive(Debug)]
+pub struct ArgInstruction {
+    pub opt_type: ArgOptType,
+    pub name: String,
+    pub value: serde_json::Value,
 }
 
 impl<'a> Display for Gerund<'a> {
@@ -354,42 +368,32 @@ pub async fn run_command(arg_set: ArgSet, command: CliCommand) -> Result<serde_j
     for prefix_arg in command.prefix_args {
         cmd.arg(prefix_arg.s);
     }
-    // add all the args from the arg set, serializing if it's not a simple type:
-    let mut flat_arg_set = Vec::with_capacity(arg_set.len());
-    for (key, value) in arg_set.into_iter() {
-        match value {
+    for instruction in arg_set {
+        let prefix = match instruction.opt_type {
+            ArgOptType::Long => "--",
+            ArgOptType::Short => "-",
+            ArgOptType::Verbatim => "",
+        };
+        cmd.arg(format!("{}{}", prefix, instruction.name));
+        let val_string = match instruction.value {
             serde_json::Value::Null => {
-                // TODO: should nulls be omitted?
-                flat_arg_set.push((key, "null".to_string()));
-            },
-            serde_json::Value::Bool(v) => {
-                flat_arg_set.push((key, v.to_string()));
+                //TODO: should nulls be omitted?
+                "null".to_string()
+            }
+            serde_json::Value::Bool(b) => {
+                b.to_string()
             }
             serde_json::Value::Number(number) => {
-                flat_arg_set.push((key, number.to_string()));
+                number.to_string()
             }
-            serde_json::Value::String(s) => {
-                flat_arg_set.push((key, s));
+            serde_json::Value::String(s) => s,
+            // arrays and objects serialize as json string:
+            x => {
+                serde_json::to_string(&x)
+                    .map_err(|e| format!("failed to serialize json value of arg with key '{}': {:?}", instruction.name, e))?
             }
-            serde_json::Value::Array(values) => {
-                let s = serde_json::to_string(&values)
-                    .map_err(|e| format!("failed to serialize array values of key '{}': {:?}", key, e))?;
-                flat_arg_set.push((key, s));
-            }
-            serde_json::Value::Object(map) => {
-                let s = serde_json::to_string(&map)
-                    .map_err(|e| format!("failed to serialize object values of key '{}': {:?}", key, e))?;
-                flat_arg_set.push((key, s));
-            }
-        }
-    }
-    // want consistent ordering so convert arg set to a flat list, sorting by key:
-    flat_arg_set.sort_by(|a, b| a.0.cmp(&b.0));
-    for (key, val) in flat_arg_set {
-        // TODO: allow user to determine the format of each key. for now
-        // we assume long option syntax for all
-        cmd.arg(format!("--{}", key));
-        cmd.arg(val);
+        };
+        cmd.arg(val_string);
     }
 
     let output = cmd.output().await
@@ -422,15 +426,31 @@ pub fn create_arg_set(
                     serde_json::Value::Object(map) => map,
                     x => return Err(format!("json path query '{}' did not return a json object. found: {:?}", jp_query.to_string(), x))
                 };
-                arg_set.extend(map.clone());
+                // add in alphabetical order. default to long opts for keys of length > 1, short opt otherwise.
+                // TODO: allow directives on top of arg transforms to specify things such as order, long vs short vs verbatim, etc.
+                let mut map_flat: Vec<_> = map.into_iter().collect();
+                map_flat.sort_by(|a, b| a.0.cmp(&b.0));
+                for (key, value) in map_flat {
+                    let opt_type = if key.len() > 1 {
+                        ArgOptType::Long
+                    } else {
+                        ArgOptType::Short
+                    };
+                    arg_set.push(ArgInstruction { opt_type, name: key, value });
+                }
             }
             ArgTransform::Remove(string_at_line) => {
-                arg_set.remove(&string_at_line.s);
+                // TODO: should remove remove all, last or first occurrence of this key?
+                // for now i think makes sense to only remove the last found.
+                // perhaps a different remove syntax like "!! xyz" can remove all occurrances
+                if let Some(index) = arg_set.iter().rposition(|x| x.name == string_at_line.s) {
+                    arg_set.remove(index);
+                }
             }
             ArgTransform::Add(string_at_line, jp_query) => {
                 // get value from user's input:
-                let val = command_state.evaluate_arg_transform(name, jp_query)?;
-                arg_set.insert(string_at_line.s.clone(), val);
+                let value = command_state.evaluate_arg_transform(name, jp_query)?;
+                arg_set.push(ArgInstruction { opt_type: ArgOptType::Verbatim, name: string_at_line.s.clone(), value });
             }
         }
     }
@@ -440,6 +460,9 @@ pub fn create_arg_set(
 
 #[cfg(test)]
 mod test {
+    use assert_matches::assert_matches;
+    use str_at_line::StringAtLine;
+
     use super::*;
 
     fn prev_match_curr(jpq: &str, prev: serde_json::Value, curr: serde_json::Value) -> bool {
@@ -760,5 +783,85 @@ mod test {
         let jpq = jsonpath_rust::parser::parse_json_path("$[0]").unwrap();
         let err = cs.evaluate_arg_transform("resource1", &jpq).expect_err("it should error");
         assert_eq!(err, "json path query '$0' for resource 'resource1' must start with $.input $.output $.accum or $.name");
+    }
+
+    #[test]
+    fn can_create_arg_set_destructure_long_short() {
+        let cs = CommandState::new(serde_json::json!({"a": "b", "long": 123.4}), None);
+        let arg_transforms = vec![
+            ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap())
+        ];
+        let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
+        assert_eq!(arg_set.len(), 2);
+        // a should be destructured to a short opt since its 1 character
+        assert_eq!(&arg_set[0].name, "a");
+        assert_eq!(arg_set[0].value, serde_json::json!("b"));
+        assert_matches!(&arg_set[0].opt_type, ArgOptType::Short);
+
+        // this should become a long opt because its more than 1 character
+        assert_eq!(&arg_set[1].name, "long");
+        assert_eq!(arg_set[1].value, serde_json::json!(123.4));
+        assert_matches!(&arg_set[1].opt_type, ArgOptType::Long);
+    }
+
+    #[test]
+    fn can_create_arg_set_verbatim() {
+        let cs = CommandState::new(serde_json::json!({"a": "b", "long": 123.4}), None);
+        let mut verbatim_s = StringAtLine::default();
+        verbatim_s.s = "verbatim".to_string();
+        let arg_transforms = vec![
+            ArgTransform::Add(verbatim_s, jsonpath_rust::parser::parse_json_path("$.input.a").unwrap()),
+        ];
+        let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
+        assert_eq!(arg_set.len(), 1);
+        // the arg was added verbatim:
+        assert_eq!(&arg_set[0].name, "verbatim");
+        assert_eq!(arg_set[0].value, serde_json::json!("b"));
+        assert_matches!(&arg_set[0].opt_type, ArgOptType::Verbatim);
+    }
+
+    #[test]
+    fn can_create_arg_set_remove_only_last_occurrance() {
+        let cs = CommandState::new(serde_json::json!({"verbatim": "b", "xyz": "xyz"}), None);
+        let mut verbatim_s = StringAtLine::default();
+        verbatim_s.s = "verbatim".to_string();
+        let arg_transforms = vec![
+            // verbatim xyz
+            ArgTransform::Add(verbatim_s.clone(), jsonpath_rust::parser::parse_json_path("$.input.xyz").unwrap()),
+            // --verbatim b
+            ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()),
+            // removes the last occurrance of key "verbatim" which should
+            // remove the one that added --verbatim b
+            ArgTransform::Remove(verbatim_s.clone())
+        ];
+        let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
+        assert_eq!(arg_set.len(), 2);
+        assert_eq!(&arg_set[0].name, "verbatim");
+        assert_eq!(arg_set[0].value, serde_json::json!("xyz"));
+        assert_matches!(&arg_set[0].opt_type, ArgOptType::Verbatim);
+
+        assert_eq!(&arg_set[1].name, "xyz");
+        assert_eq!(arg_set[1].value, serde_json::json!("xyz"));
+        assert_matches!(&arg_set[1].opt_type, ArgOptType::Long);
+
+        // now in reverse, we destructure first, then add. it should remove the added "verbatim" key
+        let arg_transforms = vec![
+            // --verbatim b
+            ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()),
+            // verbatim xyz
+            ArgTransform::Add(verbatim_s.clone(), jsonpath_rust::parser::parse_json_path("$.input.xyz").unwrap()),
+            // removes the last occurrance of key "verbatim" which should
+            // remove the one that added --verbatim b
+            ArgTransform::Remove(verbatim_s.clone())
+        ];
+        let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
+        assert_eq!(arg_set.len(), 2);
+        assert_eq!(&arg_set[0].name, "verbatim");
+        assert_eq!(arg_set[0].value, serde_json::json!("b"));
+        assert_matches!(&arg_set[0].opt_type, ArgOptType::Long);
+
+        assert_eq!(&arg_set[1].name, "xyz");
+        assert_eq!(arg_set[1].value, serde_json::json!("xyz"));
+        assert_matches!(&arg_set[1].opt_type, ArgOptType::Long);
     }
 }
