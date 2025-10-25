@@ -10,6 +10,7 @@ use crate::{const_eval::evaluate_constants, dependencies::{can_tr_be_transitione
 
 pub mod run_template;
 pub mod run_function;
+pub mod run_builtin;
 pub mod dependencies;
 pub mod const_eval;
 
@@ -2544,5 +2545,45 @@ resource some_template(bar)
         // it should depend on foo since it calls a function and passes foo in
         assert_eq!(bar.depends_on, vec!["foo"]);
         assert_eq!(logger.get_logs(), vec!["creating 'foo'", "resource 'foo' OK", "calling function 'myfunc(foo)'", "function call 'myfunc(foo)' OK", "creating 'bar'", "resource 'bar' OK"]);
+    }
+
+    #[tokio::test]
+    async fn can_run_builtin_commands() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    /strcat ["prefix-", $.input.something, "-suffix"]
+
+resource xyz(resourceA)
+    {"something": "hello"}
+"#;
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        assert_eq!(resource_a.output.as_str().unwrap(), "prefix-hello-suffix");
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
+
+    #[tokio::test]
+    async fn strcat_builtin_must_be_primitive_types() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    /strcat ["prefix-", $.input.something, "-suffix"]
+
+resource xyz(resourceA)
+    {"something": {}}
+"#;
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let state = StateFile::default();
+        let err = perform_update(logger, dpl, state).await.expect_err("it should error");
+        assert_eq!(err, "resource 'resourceA' failed to run create[0] builtin from template 'xyz': cannot evaluate /strcat builtin: one of the elements is a json object or json array. can only concatenate strings with strings,numbers,booleans, or evaluated json paths");
     }
 }

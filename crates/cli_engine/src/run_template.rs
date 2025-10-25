@@ -6,6 +6,8 @@ use log::Log;
 use serde_json::Map;
 use tokio::process::Command;
 
+use crate::run_builtin;
+
 pub type ArgSet = Vec<ArgInstruction>;
 
 struct Gerund<'a> {
@@ -231,7 +233,17 @@ pub async fn run_template(
                         e
                     ))?
             }
-            deploy_language::parse::template::CmdOrBuiltin::Builtin(_) => todo!("builtins not supported yet"),
+            deploy_language::parse::template::CmdOrBuiltin::Builtin(b) => {
+                run_builtin::run_builtin(resource_name, b, &command_state)
+                    .map_err(|e| format!(
+                        "resource '{}' failed to run {}[{}] builtin from template '{}': {}",
+                        resource_name,
+                        transition_type,
+                        i,
+                        template_name,
+                        e
+                    ))?
+            }
         };
 
         // TODO: allow user to define how values are merged via directives...
