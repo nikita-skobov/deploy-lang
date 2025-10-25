@@ -16,6 +16,8 @@ fn derive_works() {
     }
     assert_eq!(MyEnum::self_doc(), "this is my enum docs");
     assert_eq!(MyEnum::variant_doc("A").unwrap(), "documentation\nfor\nA");
+    // it should be case insensitive:
+    assert_eq!(MyEnum::variant_doc("a").unwrap(), "documentation\nfor\nA");
     assert_eq!(MyEnum::variant_doc("B").unwrap(), "B doc here");
     assert_eq!(MyEnum::variant_doc("Nonexistantvariant"), None);
 }

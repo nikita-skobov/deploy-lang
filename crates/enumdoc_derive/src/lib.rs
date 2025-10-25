@@ -22,7 +22,7 @@ fn enumdoc_derive_impl(input: proc_macro2::TokenStream) -> proc_macro2::TokenStr
         .variants
         .iter()
         .map(|variant| {
-            let variant_name = variant.ident.to_string();
+            let variant_name = variant.ident.to_string().to_lowercase();
             let doc_str = extract_doc_str_from_attrs(&variant.attrs);  
             quote! {
                 (#variant_name, #doc_str)
@@ -32,6 +32,7 @@ fn enumdoc_derive_impl(input: proc_macro2::TokenStream) -> proc_macro2::TokenStr
         impl enumdoc::Enumdoc for #name {
             fn self_doc() -> &'static str { #s }
             fn variant_doc(variant_name: &str) -> Option<&'static str> {
+                let variant_name = variant_name.to_lowercase();
                 static VARIANTS: &[( &str, &str )] = &[
                     #(
                         (#variant_docs_tokens),
