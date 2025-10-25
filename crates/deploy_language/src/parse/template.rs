@@ -207,6 +207,31 @@ pub enum Directive {
     /// and it inserts that value again into the accumulator but at a different path "nested.fieldvalue"
     Accum { kw: StringAtLine, src_path: jsonpath_rust::parser::model::JpQuery, accum_path: jsonpath_rust::parser::model::JpQuery },
 
+    /// similar to the `@accum` directive, but `@insert` does not merge the output of this command into the accumulator. instead,
+    /// `@insert` will capture the output of the command and only insert into the destination path of the accumulator
+    /// as specified by the dest_path of the `@insert` directive.
+    /// 
+    /// for example:
+    /// ```text
+    /// @insert [$.something, $.my_value]
+    /// ```
+    /// will take the output of the command, and read the "something" field, and insert that field's values into
+    /// the accumulator at field "my_value", creating that field if it doesn't already exist.
+    /// 
+    /// `@insert` will error if the accumulator is not null or is not currently an object, for example if the last command ran
+    /// turned the accumulator into a string, using `@insert` in the next command will error.
+    /// 
+    /// `@insert` supports a syntactic sugar which allows for omitting the src_path. with this syntactic sugar, the
+    /// enitre output of the command is inserted into the dest_path of the accumulator.
+    /// 
+    /// for example:
+    /// ```text
+    /// # explicit syntax:
+    /// @insert [$, $.dest_path]
+    /// # syntactic sugar. this does the same as the above:
+    /// @insert $.dest_path
+    /// ```
+    Insert { kw: StringAtLine, src_path: Option<jsonpath_rust::parser::model::JpQuery>, dest_path: jsonpath_rust::parser::model::JpQuery },
     // TODO: support a diff same directive that ands together same and diff conditions
     // as otherwise there's no way to support running a command with multiple same/diff conditions
     // anded together. at the root level they are ORed together
@@ -389,6 +414,39 @@ pub fn parse_directive<'a>(
             let accum_path = jsonpath_rust::parser::parse_json_path(second_path_str.as_str())
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", second_path_str.s, e)))?;
             Ok(Directive::Accum { kw: kw.to_owned(), src_path, accum_path })
+        }
+        "insert" => {
+            let val = json_with_positions::parse_json_value(rest.s)
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse insert directive as json: {:?}", e)))?;
+            let mut array = match val {
+                json_with_positions::Value::Array { val, .. } => val,
+                json_with_positions::Value::JsonPath { val, .. } => {
+                    // in this syntactic sugar, the user only specified the dest path:
+                    let dest_path = jsonpath_rust::parser::parse_json_path(val.as_str())
+                        .map_err(|e| SpannedDiagnostic::from_str_at_line(&val, format!("failed to parse '{}' as json path query: {:?}", val, e)))?;
+                    return Ok(Directive::Insert { kw: kw.to_owned(), src_path: None, dest_path })
+                }
+                x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("insert directive must be followed by either a json path query, or a json array of two json path queries. instead found {:?}", x)))
+            };
+            let second = array.pop();
+            let first = array.pop();
+            let (first, second) = match (first, second) {
+                (Some(f), Some(s)) => (f, s),
+                _ => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("insert directive must be followed by a json array of two json paths")))
+            };
+            let first_path_str = match first {
+                json_with_positions::Value::JsonPath { val, .. } => val,
+                x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("first insert directive value must be a json path, instead found '{:?}'", x))),
+            };
+            let second_path_str = match second {
+                json_with_positions::Value::JsonPath { val, .. } => val,
+                x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("second insert directive value must be a json path, instead found '{:?}'", x))),
+            };
+            let src_path = jsonpath_rust::parser::parse_json_path(first_path_str.as_str())
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", first_path_str.s, e)))?;
+            let dest_path = jsonpath_rust::parser::parse_json_path(second_path_str.as_str())
+                .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", second_path_str.s, e)))?;
+            Ok(Directive::Insert { kw: kw.to_owned(), src_path: Some(src_path), dest_path })
         }
         unknown_kw => {
             Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
@@ -595,7 +653,7 @@ pub fn parse_command<'a>(
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{parse_document_to_sections, sections_to_dpl_file, template::{ArgTransform, Builtin, Directive}};
+    use crate::{parse::{parse_document_to_sections, sections_to_dpl_file, template::{ArgTransform, Builtin, Directive}}, parse_and_validate};
     use assert_matches::assert_matches;
     use json_with_positions::Value;
 
@@ -795,6 +853,62 @@ template something
             assert_eq!(src_path.to_string(), "$inputxyz");
             assert_eq!(accum_path.to_string(), "$someaccumvalue");
         });
+    }
+
+    #[test]
+    fn can_parse_insert_directive() {
+        let document = r#"
+template something
+  create
+    @insert [$.input.xyz, $.some.accum.value]
+    /strcat []
+"#;
+        let dpl = parse_and_validate(document).unwrap();
+        assert_eq!(dpl.templates.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Insert { kw, src_path, dest_path } => {
+            assert_eq!(kw.s, "insert");
+            assert_eq!(kw.line, 3);
+            assert_eq!(kw.col, 5);
+            assert_eq!(src_path.clone().unwrap().to_string(), "$inputxyz");
+            assert_eq!(dest_path.to_string(), "$someaccumvalue");
+        });
+    }
+
+    #[test]
+    fn can_parse_insert_directive_syntactic_sugar() {
+        let document = r#"
+template something
+  create
+    @insert $.some.accum.value
+    /strcat []
+"#;
+        let dpl = parse_and_validate(document).unwrap();
+        assert_eq!(dpl.templates.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Insert { kw, src_path, dest_path } => {
+            assert_eq!(kw.s, "insert");
+            assert_eq!(kw.line, 3);
+            assert_eq!(kw.col, 5);
+            assert!(src_path.is_none());
+            assert_eq!(dest_path.to_string(), "$someaccumvalue");
+        });
+    }
+
+    #[test]
+    fn insert_directive_must_be_json_path_or_array() {
+        let document = r#"
+template something
+  create
+    @insert "hello"
+    /strcat []
+"#;
+        let mut errs = parse_and_validate(document).expect_err("it should error");
+        assert_eq!(errs.len(), 1);
+        let err = errs.remove(0);
+        assert_eq!(err.message, "insert directive must be followed by either a json path query, or a json array of two json path queries. instead found String { pos: Position { line: 0, column: 0 }, val: StringAtLine { s: \"hello\", line: 0, col: 0 } }");
     }
 
     #[test]
