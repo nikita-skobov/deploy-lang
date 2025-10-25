@@ -6,11 +6,12 @@ use jsonpath_rust::{parser::model::JpQuery, query::{js_path_process, state::Stat
 use serde::{Deserialize, Serialize};
 use str_at_line::StringAtLine;
 
-use crate::dependencies::{can_tr_be_transitioned, get_all_transient_dependencies_map, get_delete_order_map};
+use crate::{const_eval::evaluate_constants, dependencies::{can_tr_be_transitioned, get_all_transient_dependencies_map, get_delete_order_map}};
 
 pub mod run_template;
 pub mod run_function;
 pub mod dependencies;
+pub mod const_eval;
 
 /// during a deploy, if a resource references a function, we actually create a separate ephemeral resource
 /// for that function call, and it will have this prefix such that we dont accidentally
@@ -483,7 +484,9 @@ pub async fn perform_update(
     mut dpl: DplFile,
     mut state: StateFile,
 ) -> Result<StateFile, String> {
-    // first, collect resources into create/update/or delete, discarding
+    // first, evaluate any constants. this must be done before any dependencies are calculated:
+    evaluate_constants(logger, &mut dpl).await?;
+    // next, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
     let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
     // add fake resources that will correspond to the output of function calls:

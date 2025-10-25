@@ -26,6 +26,14 @@ pub async fn run_function(
 ) -> Result<serde_json::Value, String> {
     let func_call: FunctionCall = serde_json::from_value(input)
         .map_err(|e| format!("failed to deserialize function input into a function call shape: {:?}", e))?;
+    run_function_ex(logger, _resource_name, func_call).await
+}
+
+pub async fn run_function_ex(
+    logger: &'static dyn Log,
+    _resource_name: &str,
+    func_call: FunctionCall
+) -> Result<serde_json::Value, String> {
     log::info!(logger: logger, "calling function '{}({})'", func_call.function_name, func_call.depends_on.name);
     let script = fill_javascript_function_template(&func_call);
     let input_ser = serde_json::to_string(&func_call.depends_on.input)
