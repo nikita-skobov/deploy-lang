@@ -25,6 +25,22 @@
       ]
     },
     {
+      "begin": "^(const)(\\s)([^#]+)",
+      "end": "^$",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.dpl" },
+        "3": { "name": "entity.name.function.dpl" }
+      },
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#json"
+        }
+      ]
+    },
+    {
       "begin": "^(resource)\\s+(\\w+)\\((\\w+)\\)",
       "end": "^$",
       "beginCaptures": {
