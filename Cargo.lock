@@ -393,6 +393,7 @@ name = "language_server"
 version = "0.1.0"
 dependencies = [
  "deploy_language",
+ "json_with_positions",
  "jsonpath-rust",
  "lsp-server",
  "lsp-types",

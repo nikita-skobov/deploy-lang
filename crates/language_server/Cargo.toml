@@ -12,3 +12,4 @@ serde = { version = "1.0" }
 deploy_language = { workspace = true }
 str_at_line = { workspace = true }
 jsonpath-rust = { workspace = true }
+json_with_positions = { workspace = true }

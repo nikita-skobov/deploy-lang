@@ -272,6 +272,8 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
             let _ = deploy_language::parse::resource::parse_resource_section(&mut dpl, section);
         } else if section.typ == deploy_language::parse::function::SECTION_TYPE {
             let _ = deploy_language::parse::function::parse_function_section(&mut dpl, section);
+        } else if section.typ == deploy_language::parse::constant::SECTION_TYPE {
+            let _ = deploy_language::parse::constant::parse_const_section(&mut dpl, section);
         }
     }
     let resource_name = match json_path_query.segments.first() {
@@ -279,27 +281,35 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
             // there's only one json path query segment, that means
             // its either a resource name, in which case recommend input/output/accum/name
             // or if its a function name, recommend other resource names that can be passed into the function
+            // or if its a const name, recommend fields within that const
             let name_str = name.to_string();
             match dpl.functions.iter().find(|x| x.function_name.as_str() == &name_str) {
                 Some(_) => {
-                    // first is a function, return all resource names
+                    // first is a function, return all resource names and const names
+                    let names = dpl.resources.iter().map(|x| &x.resource_name.s);
+                    let names = names.chain(dpl.constants.iter().map(|x| &x.const_name.s));
                     let completions = get_completion_from_keys(
                         original_pos,
-                        dpl.resources.iter().map(|x| &x.resource_name.s)
+                        names,
                     );
                     return Some(completions);
                 }
                 None => {
-                    // first is a resource, return input/output/accum/name
-                    return Some(input_output_accum_name_completions());
+                    if dpl.resources.iter().find(|x| x.resource_name.as_str() == name_str).is_some() {
+                        // first is a resource, return input/output/accum/name
+                        return Some(input_output_accum_name_completions());
+                    }
                 }
             }
+            // its a constant, fall through and recommend completions within the constant:
+            name_str
         }
         None => {
-            // if there's no segments, simply give recommendation of all the other resource names + function names:
+            // if there's no segments, simply give recommendation of all the other resource names + function names + const names:
             let resource_names = dpl.resources.iter().map(|x| &x.resource_name.s);
             let function_names = dpl.functions.iter().map(|x| &x.function_name.s);
-            let names = resource_names.chain(function_names);
+            let const_names = dpl.constants.iter().map(|x| &x.const_name.s);
+            let names = resource_names.chain(function_names).chain(const_names);
             let completions = get_completion_from_keys(
                 original_pos,
                 names
@@ -312,6 +322,16 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
             x.to_string()
         }
     };
+    // it might be a constant, so check if its a constant first, and if so, recommend
+    // completions within the constant:
+    // check if its a const first:
+    if let Some(cnst) = dpl.constants.iter().find(|x| x.const_name.as_str() == &resource_name) {
+        // referencing a constant, provide completions for the constant
+        let mut jpq = json_path_query.clone();
+        // remove the name of the constant, such that the remaining segments are into the constant json val:
+        jpq.segments.remove(0);
+        return get_arbitrary_json_completion(&cnst.body, original_pos, jpq);
+    }
     // now we know we're referencing a resource, check that the 2nd segment is "input"
     // otherwise, we cannot give completions for output/accum because we're not looking up the state to
     // be able to access their fields
@@ -324,14 +344,22 @@ pub fn handle_resource_jsonpath_completion_request<'a>(
     if second_segment.to_string() != "input" {
         return None;
     }
-    // need to convert to a serde json value. any json paths simply replace with null
-    let resource_input_val = resource.input.to_serde_json_value_with_replace_func(&mut |_| {
-        Ok(serde_json::Value::Null)
-    }).ok()?;
     // now simply do a json path lookup using the remaining segments
     // on the input of this resource
     let remaining_segments = json_path_query.segments.get(2..)?.to_vec();
     let jpq = jsonpath_rust::parser::model::JpQuery { segments: remaining_segments };
+    return get_arbitrary_json_completion(&resource.input, original_pos, jpq);
+}
+
+pub fn get_arbitrary_json_completion(
+    val: &json_with_positions::Value,
+    original_pos: Position,
+    jpq: jsonpath_rust::parser::model::JpQuery,
+) -> Option<Vec<CompletionItem>> {
+    // need to convert to a serde json value. any json paths simply replace with null
+    let resource_input_val = val.to_serde_json_value_with_replace_func(&mut |_| {
+        Ok(serde_json::Value::Null)
+    }).ok()?;
     let mut res = jsonpath_rust::query::js_path_process(
         &jpq, &resource_input_val
     ).ok()?;
@@ -732,6 +760,90 @@ function javascript(other_func)
     }
 
     #[test]
+    fn can_provide_completions_for_resources_referencing_constants() {
+        let completion_request_line = 1;
+        let completion_request_col = 15;
+        // $. at column 15
+        let document = r#"resource some_template(a)
+   {"const": $.}
+
+const a
+    {}
+
+const b
+    {}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $. so it should recommend resource names and function names, of which theres only 2 function names:
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.remove(0).label, "a");
+        assert_eq!(res.remove(0).label, "b");
+    }
+
+    #[test]
+    fn can_provide_completions_for_const_fields() {
+        let completion_request_line = 1;
+        let completion_request_col = 17;
+        // $.a. at column 17
+        let document = r#"resource some_template(a)
+   {"const": $.a.}
+
+const a
+    {"b": "e", "c": 1}
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $.a. so it should recommend
+        // the values within the "a" constant (it has fields "b" and "c")
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        res.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.remove(0).label, "b");
+        assert_eq!(res.remove(0).label, "c");
+    }
+
+    #[test]
+    fn can_provide_completions_for_const_fields_deep() {
+        let completion_request_line = 1;
+        let completion_request_col = 21;
+        // $.a.b.c. at column 21
+        let document = r#"resource some_template(a)
+   {"const": $.a.b.c.}
+
+const a
+    {
+        "b": {
+            "c": { "e": 1, "d": false, "f": [] }
+        }
+    }
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $.a.b.c. so it should recommend
+        // the values within the "a" constant deeply
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 3);
+        res.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(res.remove(0).label, "d");
+        assert_eq!(res.remove(0).label, "e");
+        assert_eq!(res.remove(0).label, "f");
+    }
+
+    #[test]
     fn can_provide_completions_for_functions_being_passed_resource_names() {
         let completion_request_line = 1;
         let completion_request_col = 21;
@@ -763,6 +875,40 @@ resource some_template(other_resource2)
         assert_eq!(res.len(), 2);
         assert_eq!(res.remove(0).label, "other_resource1");
         assert_eq!(res.remove(0).label, "other_resource2");
+    }
+
+    #[test]
+    fn can_provide_completions_for_functions_being_passed_const_names() {
+        let completion_request_line = 1;
+        let completion_request_col = 21;
+        // $. at column 21
+        let document = r#"resource some_template(a)
+   {"func": $.myfunc.}
+
+function javascript(myfunc)
+  console.log(1);
+
+function javascript(other_func)
+  console.log(1);
+
+const myconst1
+    {}
+
+const other_const
+  "e"
+"#.to_string();
+        let (_, sections) = split_sections_with_logger(&document, ());
+        let params = completion_params_with_position(completion_request_line, completion_request_col);
+        let parsed = ParsedDoc {
+            doc: &document,
+            parsed: sections,
+        };
+        // the column is at the $.myfunc. so it should recommend const names
+        // that this function can call.
+        let mut res = handle_completion_request_ex(params, &parsed).unwrap();
+        assert_eq!(res.len(), 2);
+        assert_eq!(res.remove(0).label, "myconst1");
+        assert_eq!(res.remove(0).label, "other_const");
     }
 
     #[test]
