@@ -2611,4 +2611,26 @@ resource xyz(resourceA)
         let logs = logger.get_logs();
         assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
     }
+
+    #[tokio::test]
+    async fn can_use_random_builtin() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    /random string 8
+
+resource xyz(resourceA)
+    {"something": "hello"}
+"#;
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        assert_eq!(resource_a.output.as_str().unwrap().len(), 8);
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
 }

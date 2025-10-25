@@ -107,7 +107,19 @@ pub enum Builtin {
     /// because the `$.input` evaluates to an object.
     /// 
     /// strcat is valid with an empty array, in which case it returns an empty string
-    Strcat { kw: StringAtLine, values: Vec<Value> }
+    Strcat { kw: StringAtLine, values: Vec<Value> },
+
+    /// - input: random type, size
+    /// - output: string
+    /// 
+    /// `/random` returns a random value, depending on the random type provided, and of the size specified.
+    /// example:
+    /// ```text
+    /// /random string 8
+    /// ```
+    /// 
+    /// would return a random string of 8 characters
+    Random { kw: StringAtLine, r_type: StringAtLine, len: usize },
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -557,6 +569,23 @@ pub fn parse_builtin_command<'a>(
             };
             CmdOrBuiltin::Builtin(Builtin::Strcat { kw: command, values })
         }
+        "/random" => {
+            // for random we probably shouldnt support multi-line...
+            let params = builtin_arg_lines.first()
+                .ok_or_else(|| SpannedDiagnostic::from_str_at_line(&command, format!("/random missing random type (string)")))?;
+            let params_borrowed = params.as_borrowed();
+            let mut iter = params_borrowed.split_ascii_whitespace();
+            let random_type = iter.next()
+                .ok_or_else(|| SpannedDiagnostic::from_str_at_line(&command, format!("/random missing random type (string)")))?;
+            if random_type != "string" {
+                return Err(SpannedDiagnostic::from_str_at_line(&random_type, format!("unknown random type '{}' currently random type only supports 'string'", random_type)));
+            }
+            let len = iter.next()
+                .ok_or_else(|| SpannedDiagnostic::from_str_at_line(&command, format!("/random missing length")))?;
+            let len: usize = len.s.parse()
+                .map_err(|_| SpannedDiagnostic::from_str_at_line(&len, format!("failed to parse '{}' as a number", len)))?;
+            CmdOrBuiltin::Builtin(Builtin::Random { kw: command, r_type: random_type.to_owned(), len })
+        }
         x => return Err(SpannedDiagnostic::from_str_at_line(&command, format!("unknown builtin '{}'", x)))
     };
     Ok(Some(CliCommandWithDirectives {
@@ -794,6 +823,23 @@ template something
         assert_eq!(dpl.templates[0].create.cli_commands[2].cmd.as_command().command, "echo");
         assert_matches!(dpl.templates[0].create.cli_commands[3].cmd.as_builtin(), Builtin::Strcat { values, .. } => {
             assert_eq!(values.len(), 1);
+        });
+    }
+
+    #[test]
+    fn can_parse_builtin_random() {
+        let document = r#"
+template something
+  create
+    /random string 8
+"#;
+        let mut sections = parse_document_to_sections(document);
+        let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
+        let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
+        assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
+        assert_matches!(dpl.templates[0].create.cli_commands[0].cmd.as_builtin(), Builtin::Random { r_type, len, .. } => {
+            assert_eq!(r_type, "string");
+            assert_eq!(*len, 8);
         });
     }
 

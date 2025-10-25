@@ -225,6 +225,7 @@ pub async fn run_template(
 ) -> Result<serde_json::Value, String> {
     log::info!(logger: logger, "{} '{}'", transition_gerund(transition_type), resource_name);
     let mut command_state = CommandState::new(input, last_output);
+    let mut rng = fastrand::Rng::new();
     // TODO: process directives...
     for (i, command) in transition.cli_commands.drain(..).enumerate() {
         // last input should only be set for update transitions.
@@ -271,7 +272,7 @@ pub async fn run_template(
                     ))?
             }
             deploy_language::parse::template::CmdOrBuiltin::Builtin(b) => {
-                run_builtin::run_builtin(resource_name, b, &command_state)
+                run_builtin::run_builtin(&mut rng, resource_name, b, &command_state)
                     .map_err(|e| format!(
                         "resource '{}' failed to run {}[{}] builtin from template '{}': {}",
                         resource_name,

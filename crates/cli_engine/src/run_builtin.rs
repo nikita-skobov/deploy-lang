@@ -3,6 +3,7 @@ use deploy_language::parse::template::Builtin;
 use crate::run_template::CommandState;
 
 pub fn run_builtin(
+    rng: &mut fastrand::Rng,
     resource_name: &str,
     builtin: Builtin,
     cs: &CommandState,
@@ -55,6 +56,12 @@ pub fn run_builtin(
             }
             serde_json::Value::String(out)
         },
+        Builtin::Random { len, .. } => {
+            use std::iter::repeat_with;
+            // TODO: support other random types dependning on r_type
+            let s: String = repeat_with(|| rng.alphanumeric()).take(len).collect();
+            serde_json::Value::String(s)
+        }
     };
     Ok(val)
 }
