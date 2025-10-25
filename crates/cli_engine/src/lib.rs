@@ -2586,4 +2586,29 @@ resource xyz(resourceA)
         let err = perform_update(logger, dpl, state).await.expect_err("it should error");
         assert_eq!(err, "resource 'resourceA' failed to run create[0] builtin from template 'xyz': cannot evaluate /strcat builtin: one of the elements is a json object or json array. can only concatenate strings with strings,numbers,booleans, or evaluated json paths");
     }
+
+    // similar to `can_run_builtin_commands` above, but uses the @insert
+    // directive to test that we can insert a string into a new field in the accum object
+    #[tokio::test]
+    async fn can_insert_strcat_value_into_accum() {
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let document = r#"
+template xyz
+  create
+    @insert $.somefield
+    /strcat ["prefix-", $.input.something, "-suffix"]
+
+resource xyz(resourceA)
+    {"something": "hello"}
+"#;
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let state = StateFile::default();
+        let out_state = perform_update(logger, dpl, state).await.expect("it should not error");
+        assert_eq!(out_state.resources.len(), 1);
+        let resource_a = out_state.resources.get("resourceA").unwrap();
+        assert_eq!(resource_a.output, serde_json::json!({"somefield": "prefix-hello-suffix"}));
+        let logs = logger.get_logs();
+        assert_eq!(logs, vec!["creating 'resourceA'", "resource 'resourceA' OK"]);
+    }
 }

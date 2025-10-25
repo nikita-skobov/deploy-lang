@@ -58,9 +58,25 @@ pub struct CommandState {
     pub accum: serde_json::Value,
 }
 
+pub fn process_json_path(
+    jpq: &JpQuery,
+    val: &serde_json::Value
+) -> Result<serde_json::Value, String> {
+    let mut vals = jsonpath_rust::query::js_path_process(&jpq, val)
+        .map_err(|e| format!("failed to process json path '{}': {:?}", jpq.to_string(), e))?;
+    let mut vals: Vec<serde_json::Value> = vals.drain(..).map(|x| x.val().clone()).collect();
+    // TODO: check for not found results.. jsonpath_rust will return an empty array if the lookup fails!
+    let val = if vals.len() == 1 {
+        vals.pop().unwrap()
+    } else {
+        serde_json::Value::Array(vals)
+    };
+    Ok(val)
+}
+
 impl CommandState {
     pub fn new(input: serde_json::Value, last_output: Option<serde_json::Value>) -> Self {
-        let output = last_output.unwrap_or(serde_json::Value::Null);
+        let output = last_output.unwrap_or(serde_json::Value::Object(Default::default()));
         Self {
             input,
             output: output.clone(),
@@ -96,15 +112,7 @@ impl CommandState {
         // we removed the first segment which pointed at either input,output, or accum
         // and now we can evaluate the rest of the path query
         let jpq_eval = JpQuery { segments: cloned_segments };
-        let mut vals = jsonpath_rust::query::js_path_process(&jpq_eval, val)
-            .map_err(|e| format!("failed to process json path '{}': {:?}", jpq_eval.to_string(), e))?;
-        let mut vals: Vec<serde_json::Value> = vals.drain(..).map(|x| x.val().clone()).collect();
-        // TODO: check for not found results.. jsonpath_rust will return an empty array if the lookup fails!
-        let val = if vals.len() == 1 {
-            vals.pop().unwrap()
-        } else {
-            serde_json::Value::Array(vals)
-        };
+        let val = process_json_path(&jpq_eval, val)?;
         Ok(val)
     }
 
@@ -115,6 +123,20 @@ impl CommandState {
         // creating empty objects if it references a path that doesnt exist yet
         let mut segments = accum_path.segments.clone();
         set_value_recursively(&mut self.accum, value, &mut segments)
+    }
+
+    pub fn insert(&mut self, val: &serde_json::Value, src_path: &Option<JpQuery>, dest_path: &JpQuery) -> Result<(), String> {
+        // first, get the value referenced by the src path, or the entire value
+        // if no src path was specified:
+        let val = match src_path {
+            Some(jpq) => {
+                process_json_path(jpq, val)?
+            }
+            None => val.clone(),
+        };
+        // now insert that value into the dest path of the accumulator
+        let mut segments = dest_path.segments.clone();
+        set_value_recursively(&mut self.accum, val, &mut segments)
     }
 }
 
@@ -164,7 +186,7 @@ pub fn set_value_at_key(
         set_value_recursively(obj, set_val, remaining_selectors)
     } else {
         return Err(format!("failed to access accumulator at $ ... '{}'", key))
-    }    
+    }
 }
 
 pub fn set_value_at_index(
@@ -212,7 +234,22 @@ pub async fn run_template(
                 continue;
             }
         }
-        let should_drop_output = command.directives.iter().any(|d| match d { Directive::DropOutput { .. } => true, _ => false });
+        let mut should_drop_output = command.directives.iter().any(|d|
+            match d {
+                Directive::DropOutput { .. } => true,
+                _ => false
+            }
+        );
+        let has_insert_directive = command.directives.iter().find(|d| {
+            match d {
+                Directive::Insert { .. } => true,
+                _ => false,
+            }
+        }).is_some();
+        // if there's an insert directive, drop the output
+        if !should_drop_output {
+            should_drop_output = has_insert_directive;
+        }
         let val = match command.cmd {
             deploy_language::parse::template::CmdOrBuiltin::Command(cli_command) => {
                 let arg_set = create_arg_set(resource_name, &command_state, &cli_command.arg_transforms)
@@ -251,9 +288,17 @@ pub async fn run_template(
         // or if its not an object, then we will take the latest value
         if !should_drop_output {
             command_state.accum = default_value_merge(command_state.accum, val);
+        } else {
+            // if we did not merge into the accumulator, check any insert directives
+            // to explicitly insert into accumulator instead of merging the entire output:
+            for d in command.directives.iter() {
+                if let Directive::Insert { src_path, dest_path, .. } = d {
+                    command_state.insert(&val, src_path, dest_path)?;
+                }
+            }
         }
 
-        // after merge, check for any accumulator directives
+        // after merge/insert, check for any accumulator directives
         for d in command.directives.iter() {
             if let Directive::Accum { src_path, accum_path, .. } = d {
                 command_state.insert_accum(resource_name, src_path, accum_path)?;
@@ -606,6 +651,31 @@ mod test {
     }
 
     #[test]
+    fn can_insert_entire_output_into_accum() {
+        let mut cs = CommandState::new(serde_json::json!({"inputa": "inputa"}), None);
+        let dest_path = jsonpath_rust::parser::parse_json_path("$.some_madeup_field").unwrap();
+        cs.insert(&serde_json::json!({"a": "b"}), &None, &dest_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"some_madeup_field": {"a": "b"}}));
+    }
+
+    #[test]
+    fn can_insert_nested_output_val_into_accum() {
+        let mut cs = CommandState::new(serde_json::json!({}), None);
+        let src_path = jsonpath_rust::parser::parse_json_path("$.a.b.c").unwrap();
+        let dest_path = jsonpath_rust::parser::parse_json_path("$.some_madeup_field.nested").unwrap();
+        cs.insert(&serde_json::json!({"a": {"b": {"c": ["hello"]}}}), &Some(src_path), &dest_path).unwrap();
+        assert_eq!(cs.accum, serde_json::json!({"some_madeup_field": {"nested": ["hello"]}}));
+    }
+
+    #[test]
+    fn cannot_insert_into_accum_if_its_not_an_object() {
+        let mut cs = CommandState::new(serde_json::json!({}), Some(serde_json::json!("this is a string")));
+        let dest_path = jsonpath_rust::parser::parse_json_path("$.some_madeup_field.nested").unwrap();
+        let err = cs.insert(&serde_json::json!({"a": "b"}), &None, &dest_path).expect_err("it should fail");
+        assert_eq!(err, "tried to access accumulator at $ ... 'some_madeup_field'. could not set that key as the value is not an object String(\"this is a string\")");
+    }
+
+    #[test]
     fn should_run_update_cmd_works_simple_diff() {
         // a must be different for it to run the update command
         let directives = vec![
@@ -758,7 +828,7 @@ mod test {
         let cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
         let jpq = jsonpath_rust::parser::parse_json_path("$.output").unwrap();
         let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
-        assert_eq!(evaluated, serde_json::Value::Null);
+        assert_eq!(evaluated, serde_json::Value::Object(Default::default()));
         let jpq = jsonpath_rust::parser::parse_json_path("$.output.some.value").unwrap();
         let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
         assert_eq!(evaluated, serde_json::Value::Array(vec![]));
@@ -769,7 +839,7 @@ mod test {
         let mut cs = CommandState::new(serde_json::json!({"a": "aval"}), None);
         let jpq = jsonpath_rust::parser::parse_json_path("$.accum").unwrap();
         let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
-        assert_eq!(evaluated, serde_json::json!(null));
+        assert_eq!(evaluated, serde_json::json!({}));
         let jpq = jsonpath_rust::parser::parse_json_path("$.accum.aout").unwrap();
         let evaluated = cs.evaluate_arg_transform("resource1", &jpq).expect("it should not error");
         assert_eq!(evaluated, serde_json::json!([]));
