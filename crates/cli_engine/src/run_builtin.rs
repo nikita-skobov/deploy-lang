@@ -51,7 +51,10 @@ pub fn run_builtin(
                         out.push_str(&s);
                     }
                     serde_json::Value::String(s) => out.push_str(&s),
-                    _ => return Err(format!("cannot evaluate /strcat builtin: one of the elements is a json object or json array. can only concatenate strings with strings,numbers,booleans, or evaluated json paths")),
+                    x => {
+                        let val_serialized = serde_json::to_string(&x).unwrap_or(format!("{:?}", x));
+                        return Err(format!("cannot evaluate /strcat builtin: one of the elements '{}' is a json object or json array. can only concatenate strings with strings,numbers,booleans, or evaluated json paths", val_serialized))
+                    },
                 }
             }
             serde_json::Value::String(out)
