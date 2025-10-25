@@ -83,6 +83,25 @@ pub fn resource_has_corresponding_template(resource: &ResourceSection, dpl: &Dpl
     }
 }
 
+/// returns Some(_) if the const name was found to be a constant
+/// in the dpl file, None otherwise. this function will submit diagnostics as-needed.
+/// such that if it returns Some(_) there may be 0 or more diagnostics added, and the caller
+/// does not need to add more. if it returns None there are guaranteed to be no diagnostics added
+/// and the caller should continue checking if its a resource reference instead.
+pub fn resource_has_valid_const_reference(
+    _resource: &ResourceSection,
+    dpl: &DplFile,
+    _diagnostics: &mut Vec<SpannedDiagnostic>,
+    const_name: &str,
+    _jpq: &jsonpath_rust::parser::model::JpQuery,
+    _jpq_location: &StringAtLine,
+) -> Option<()> {
+    let _const_section = dpl.constants.iter().find(|x| x.const_name.as_str() == const_name)?;
+    // now we know its referencing a constant
+    // TODO: validate the path into the constant is valid...
+    Some(())
+}
+
 /// returns Some(_) if the function name was found to be a function
 /// in the dpl file, None otherwise. this function will submit diagnostics as-needed.
 /// such that if it returns Some(_) there may be 0 or more diagnostics added, and the caller
@@ -206,6 +225,10 @@ pub fn resource_has_valid_jsonpath_references(resource: &ResourceSection, dpl: &
         let referenced_resource_name = first_segment.to_string();
         // first, try to check if its a valid function:
         if let Some(_) = resource_has_valid_function_reference(resource, dpl, diagnostics, &referenced_resource_name, &jpq, &jp) {
+            continue;
+        }
+        // check if its a valid resource:
+        if let Some(_) = resource_has_valid_const_reference(resource, dpl, diagnostics, &referenced_resource_name, &jpq, &jp) {
             continue;
         }
         // if its not a function reference, then its a resource reference:
@@ -481,6 +504,22 @@ resource my_template(other)
 
 resource my_template(my_resource)
     {"a": $.other.name}
+"#;
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
+    }
+
+    #[test]
+    fn valid_jsonpath_reference_const() {
+        let file = r#"
+template my_template
+  create
+    echo hi
+
+const some_const
+  {"a":"b"}
+
+resource my_template(other)
+    {"blah": $.some_const}
 "#;
         let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
