@@ -1,5 +1,7 @@
 //! module for the various validations that should happen to a DplFile once it has been successfully parsed
 
+use std::collections::HashSet;
+
 use jsonpath_rust::query::{state::State, Query};
 use str_at_line::{SpannedStr, StringAtLine};
 
@@ -14,10 +16,24 @@ const RESERVED_KEYWORDS: &[&str] = &[
 
 pub fn validate_dpl_file(dpl: &DplFile) -> Vec<SpannedDiagnostic> {
     let mut diagnostics = vec![];
+    validate_unique_names(dpl, &mut diagnostics);
     validate_resources(dpl, &mut diagnostics);
     validate_functions(dpl, &mut diagnostics);
     validate_templates(dpl, &mut diagnostics);
     diagnostics
+}
+
+pub fn validate_unique_names(dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
+    let names = dpl.resources.iter().map(|x| &x.resource_name);
+    let names = names.chain(dpl.constants.iter().map(|x| &x.const_name));
+    let names = names.chain(dpl.functions.iter().map(|x| &x.function_name));
+    let names = names.chain(dpl.templates.iter().map(|x| &x.template_name));
+    let mut unique_set = HashSet::new();
+    for name in names {
+        if !unique_set.insert(name.as_str()) {
+            diagnostics.push(SpannedDiagnostic::from_str_at_line(name, format!("all resource, template, function, and const names must be unique. '{}' is defined multiple times", name)));
+        }
+    }
 }
 
 pub fn validate_templates(dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic>) {
@@ -35,9 +51,6 @@ pub fn validate_functions(dpl: &DplFile, diagnostics: &mut Vec<SpannedDiagnostic
             diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_type, format!("function name cannot be empty")));
         }
         name_is_not_reserved(&function.function_name, "function", diagnostics);
-        if let Some(r) = dpl.resources.iter().find(|x| x.resource_name.as_str() == function.function_name.as_str()) {
-            diagnostics.push(SpannedDiagnostic::from_str_at_line(&function.function_name, format!("cannot name a function the same name as a resource. found resource '{}' with same name as this function", r.resource_name.as_str())));
-        }
     }
 }
 
@@ -342,6 +355,61 @@ resource my_template(my_resource)
         let first_err = source_errors.remove(0);
         assert_eq!(first_err.0, "resource 'my_resource' references a non-existant resource 'nonexistant_resource'");
         assert_eq!(first_err.1, "$.nonexistant_resource.input");
+    }
+
+    #[test]
+    fn cannot_have_duplicate_names_resources() {
+        let file = r#"
+template my_template
+  create
+    echo hi
+
+resource my_template(my_resource)
+    {}
+
+resource my_template(my_resource)
+    {}
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "all resource, template, function, and const names must be unique. 'my_resource' is defined multiple times");
+        assert_eq!(first_err.1, "my_resource");
+    }
+
+    #[test]
+    fn cannot_have_duplicate_names_templates() {
+        let file = r#"
+template my_template
+  create
+    echo hi
+
+template my_template
+  create
+    echo hi
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "all resource, template, function, and const names must be unique. 'my_template' is defined multiple times");
+        assert_eq!(first_err.1, "my_template");
+    }
+
+    #[test]
+    fn cannot_have_duplicate_names_across_section_types() {
+        let file = r#"
+template abc
+  create
+    echo hi
+
+const abc
+    {}
+"#;
+        let diagnostics = parse_and_validate(file).expect_err("it should have validation errors");
+        let mut source_errors = extract_sources_with_messages(diagnostics, file);
+        let first_err = source_errors.remove(0);
+        assert_eq!(first_err.0, "all resource, template, function, and const names must be unique. 'abc' is defined multiple times");
+        assert_eq!(first_err.1, "abc");
     }
 
     #[test]
@@ -664,27 +732,6 @@ resource my_template(other)
         let first_err = source_errors.remove(0);
         assert_eq!(first_err.0, "resource 'other' cannot call function 'myfunc' with itself as the input");
         assert_eq!(first_err.1, "$.myfunc['other']");
-    }
-
-    #[test]
-    fn cannot_have_functions_with_same_name_as_resources() {
-        let file = r#"
-template my_template
-  create
-    echo hi
-
-function javascript(myfunc)
-  console.log(1);
-
-resource my_template(myfunc)
-    {}
-"#;
-        let diagnostics = parse_and_validate(file).expect_err("it should have diagnostic errors");
-        let mut source_errors = extract_sources_with_messages(diagnostics, file);
-        assert_eq!(source_errors.len(), 1);
-        let first_err = source_errors.remove(0);
-        assert_eq!(first_err.0, "cannot name a function the same name as a resource. found resource 'myfunc' with same name as this function");
-        assert_eq!(first_err.1, "myfunc");
     }
 
     #[test]
