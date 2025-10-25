@@ -138,7 +138,7 @@ pub fn resource_has_valid_function_reference(
         );
         return Some(());
     }
-    // ensure it references a valid resource:
+    // ensure it references a valid resource or const:
     let mut function_arg_resource = match last {
         jsonpath_rust::parser::model::Segment::Selector(selector) => {
             match selector {
@@ -184,6 +184,9 @@ pub fn resource_has_valid_function_reference(
                 )
             )
         );
+        return Some(());
+    }
+    if dpl.constants.iter().find(|x| x.const_name.as_str() == function_arg_resource).is_some() {
         return Some(());
     }
     match dpl.resources.iter().find(|x| x.resource_name.as_str() == function_arg_resource) {
@@ -520,6 +523,27 @@ const some_const
 
 resource my_template(other)
     {"blah": $.some_const}
+"#;
+        let _dpl = parse_and_validate(file).expect("it should have no validation errors");
+    }
+
+    #[test]
+    fn valid_jsonpath_const_fncall() {
+        let file = r#"
+const my_const
+    { "a": "b" }
+
+template some_template
+  create
+    echo hello
+
+function javascript(my_func)
+  return { "func": "evaluated!" }
+
+resource some_template(resource_a)
+  {
+    "const_evaluated": $.my_func['my_const']
+  }
 "#;
         let _dpl = parse_and_validate(file).expect("it should have no validation errors");
     }
