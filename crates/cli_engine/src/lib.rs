@@ -2584,7 +2584,7 @@ resource xyz(resourceA)
         let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let state = StateFile::default();
         let err = perform_update(logger, dpl, state).await.expect_err("it should error");
-        assert_eq!(err, "resource 'resourceA' failed to run create[0] builtin from template 'xyz': cannot evaluate /strcat builtin: one of the elements is a json object or json array. can only concatenate strings with strings,numbers,booleans, or evaluated json paths");
+        assert_eq!(err, "resource 'resourceA' failed to run create[0] builtin from template 'xyz': cannot evaluate /strcat builtin: one of the elements '{}' is a json object or json array. can only concatenate strings with strings,numbers,booleans, or evaluated json paths");
     }
 
     // similar to `can_run_builtin_commands` above, but uses the @insert
