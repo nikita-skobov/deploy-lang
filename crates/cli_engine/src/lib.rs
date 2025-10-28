@@ -44,7 +44,7 @@ pub fn load_state(dpl: &DplFile) -> Result<(StateFile, String), SpannedDiagnosti
     let state = dpl.state.as_ref().ok_or("no state file provided")
         .map_err(|e| SpannedDiagnostic::new(e, 0, 999))?;
     let state_file = state.file.clone();
-    let file = match std::fs::OpenOptions::new().read(true).open(&state.file) {
+    let file = match std::fs::OpenOptions::new().read(true).open(&state.file.s) {
         Ok(o) => o,
         Err(e) => match e.kind() {
             std::io::ErrorKind::NotFound => {
@@ -53,12 +53,12 @@ pub fn load_state(dpl: &DplFile) -> Result<(StateFile, String), SpannedDiagnosti
                     SpannedDiagnostic::new(format!("failed to serialize empty state file: {:?}", e), 0, 999)
                 })?;
                 // create a new empty state file:
-                std::fs::write(&state.file, serialized)
+                std::fs::write(&state.file.s, serialized)
                     .map_err(|e| SpannedDiagnostic::new(
                         format!("Failed to create empty state file '{}': {:?}", state.file, e),
                         0, 999)
                     )?;
-                return Ok((default_statefile, state_file));
+                return Ok((default_statefile, state_file.s));
             },
             e => {
                 return Err(SpannedDiagnostic::new(
@@ -72,7 +72,7 @@ pub fn load_state(dpl: &DplFile) -> Result<(StateFile, String), SpannedDiagnosti
     let out: StateFile = serde_json::from_reader(buf)
         .map_err(|e| format!("Failed to read state file '{}' as json: {:?}", state.file, e))
         .map_err(|e| SpannedDiagnostic::new(e, 0, 999))?;
-    Ok((out, state_file))
+    Ok((out, state_file.s))
 }
 
 /// represents a resource that has successfully been created/updated in a state file
