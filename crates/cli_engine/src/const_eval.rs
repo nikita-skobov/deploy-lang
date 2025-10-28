@@ -266,6 +266,7 @@ mod test {
         let cs = ConstSection {
             const_name: StringAtLine::default(),
             body,
+            end_line: 0,
         };
         let jpq = jsonpath_rust::parser::parse_json_path("$.a").unwrap();
         let val = get_const_section_value(&cs, jpq).unwrap();

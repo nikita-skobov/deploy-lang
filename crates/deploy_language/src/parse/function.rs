@@ -11,6 +11,7 @@ pub struct FunctionSection {
     /// a unique identifier for this function
     pub function_name: StringAtLine,
     pub body: Vec<StringAtLine>,
+    pub end_line: usize,
 }
 
 impl FunctionSection {
@@ -37,6 +38,7 @@ pub fn parse_function_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
         .map_err(|e| SpannedDiagnostic::from_str_at_line(function_name_and_type, e))?;
     let function_type = function_type.trim().to_owned();
     let mut function_name = function_name.to_owned();
+    let end_line = section.end_line;
     let popped_parens = function_name.pop();
     if popped_parens != Some(')') {
         return Err(SpannedDiagnostic::from_str_at_line(function_name_and_type, "missing closing parentheses in function name"));
@@ -46,6 +48,7 @@ pub fn parse_function_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
         function_name,
         function_type,
         body,
+        end_line,
     };
     dpl.functions.push(function_section);
     Ok(())

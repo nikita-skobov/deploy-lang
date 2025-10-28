@@ -11,6 +11,8 @@ pub struct StateSection {
     /// state section requires loading state from a json file
     /// for now this is the only way to load state.
     pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 pub fn parse_state_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
@@ -27,7 +29,7 @@ pub fn parse_state_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Resu
             diag
         })?;
     let file = file_line.s.replace("file", "").trim().to_string();
-    let parsed = StateSection { file };
+    let parsed = StateSection { file, start_line: section.start_line, end_line: section.end_line };
     dpl.state = Some(parsed);
     Ok(())
 }
@@ -46,7 +48,7 @@ state
         let mut sections = parse_document_to_sections(document);
         let sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dpl = sections_to_dpl_file(&sections).unwrap();
-        assert_eq!(dpl.state, Some(StateSection { file: "hello.txt".to_string() }));
+        assert_eq!(dpl.state, Some(StateSection { file: "hello.txt".to_string(), start_line: 1, end_line: 2 }));
     }
 
     #[test]

@@ -172,6 +172,7 @@ mod test {
                     resource_name: $name.into(),
                     template_name: "t".into(),
                     input: json_with_positions::parse_json_value($input).unwrap(),
+                    end_line: 0,
                 } },
                 template: Default::default()
             }
@@ -189,6 +190,7 @@ mod test {
                         "thing1": $.resourceB.output.name,
                         "thing2": $.resourceC.input.something
                     }"#).unwrap(),
+                    end_line: 0,
                 },
             },
             template: TemplateSection::default(),
@@ -211,6 +213,7 @@ mod test {
                         "thing1": $['resourceB'].output.name,
                         "thing2": $["resourceC"].input.something
                     }"#).unwrap(),
+                    end_line: 0,
                 },
             },
             template: TemplateSection::default(),
@@ -232,6 +235,7 @@ mod test {
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $[0].output.name
                     }"#).unwrap(),
+                    end_line: 0,
                 },
             },
             template: TemplateSection::default(),
@@ -247,6 +251,7 @@ mod test {
                     input: json_with_positions::parse_json_value(r#"{
                         "thing1": $..output.name
                     }"#).unwrap(),
+                    end_line: 0,
                 },
             },
             template: TemplateSection::default(),
@@ -266,6 +271,7 @@ mod test {
                         "thing1": $.resourceB.output.name,
                         "thing2": $.resourceC.input.something
                     }"#).unwrap(),
+                    end_line: 0,
                 },
                 state_entry: ResourceInState {
                     // these are deps from the last time this resource was ran
@@ -448,11 +454,13 @@ mod test {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+            end_line: 0,
         });
         dpl.resources.push(ResourceSection {
             resource_name: "B".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+            end_line: 0,
         });
         let mut template = TemplateSection::default();
         template.template_name.s = "template".to_string();

@@ -22,6 +22,7 @@ pub struct TemplateSection {
 
     /// internal field to know if create was already set or not. defaults to false
     create_was_set: bool,
+    pub end_line: usize,
 }
 
 #[derive(Debug, PartialEq, Default, Clone)]
@@ -272,6 +273,7 @@ pub fn parse_template_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
         return Err(SpannedDiagnostic::new("must have a template name".to_string(), section.start_line, SECTION_TYPE.len()));
     }
     let mut out = TemplateSection::default();
+    out.end_line = section.end_line;
     out.template_name = template_name.to_owned();
     // parse the various sub-sections. each sub-section should have no indentation
     let mut body_iter: std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>> = section.body.iter().peekable();

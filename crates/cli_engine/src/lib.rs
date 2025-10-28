@@ -321,6 +321,7 @@ pub fn insert_function_resources(
                     resource_name: Default::default(),
                     template_name: Default::default(),
                     input: fake_input,
+                    end_line: 0,
                 };
                 fake_resource.resource_name.s = format!("{}_{}_{}", FUNCTION_RESOURCE_PREFIX, func.function_name.as_str(), resource_arg);
                 fake_resource.template_name.s = FUNCTION_RESOURCE_PREFIX.to_string();
@@ -925,6 +926,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "a": "a"
             }"#).unwrap(),
+            end_line: 0,
         });
         // no prior state for resource 'a' so it should be created:
         let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
@@ -963,6 +965,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "a": "this current input != the resource's last input"
             }"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("a".to_string(), ResourceInState {
             resource_name: "a".to_string(),
@@ -988,6 +991,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "a": $.i.depend.on.some.other.resource
             }"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("a".to_string(), ResourceInState {
             resource_name: "a".to_string(),
@@ -1015,6 +1019,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "a": {"v1": "v1", "v2": "v2" }
             }"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("a".to_string(), ResourceInState {
             resource_name: "a".to_string(),
@@ -1053,6 +1058,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "a": "a"
             }"#).unwrap(),
+            end_line: 0,
         });
         // resource to be updated because its state entry differs from current:
         dpl.resources.push(ResourceSection {
@@ -1061,6 +1067,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "b": "b"
             }"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("b".to_string(), ResourceInState {
             resource_name: "b".to_string(),
@@ -1107,6 +1114,7 @@ mod test {
             input: json_with_positions::parse_json_value(r#"{
                 "a": "a"
             }"#).unwrap(),
+            end_line: 0,
         };
         // template 't' does not exist. matching to a template should fail:
         let transitionable = vec![TransitionableResource::Create { current_entry: r }];
@@ -1137,8 +1145,9 @@ mod test {
                     resource_name: $name.into(),
                     template_name: "t".into(),
                     input: json_with_positions::parse_json_value($input).unwrap(),
+                    end_line: 0,
                 } },
-                template: Default::default()
+                template: Default::default(),
             }
         };
     }
@@ -1383,6 +1392,7 @@ mod test {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+            end_line: 0,
         });
         let mut template = TemplateSection::default();
         template.template_name.s = "template".to_string();
@@ -1412,6 +1422,7 @@ mod test {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+            end_line: 0,
         });
         // B has been deployed before, it should cause an update
         // but B depends on A, and so we dont know if it should actually be updated or not:
@@ -1421,6 +1432,7 @@ mod test {
             resource_name: "B".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("B".to_string(), ResourceInState {
             template_name: "template".to_string(),
@@ -1459,12 +1471,14 @@ mod test {
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be updated"}"#).unwrap(),
+            end_line: 0,
         });
         // B has been deployed before, it should cause an update
         dpl.resources.push(ResourceSection {
             resource_name: "B".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("B".to_string(), ResourceInState {
             template_name: "template".to_string(),
@@ -1517,6 +1531,7 @@ template xyz
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"a","b":"b", "c":"c"}"#).unwrap(),
+            end_line: 0,
         });
         // resourceA has been deployed before, it should cause an update
         // resourceA's last input was unchanged
@@ -1557,6 +1572,7 @@ template xyz
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"achanged","b":"b"}"#).unwrap(),
+            end_line: 0,
         });
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -1582,6 +1598,7 @@ template xyz
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"a","b":"bchanged"}"#).unwrap(),
+            end_line: 0,
         });
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -1620,6 +1637,7 @@ template xyz
             resource_name: "resourceA".into(),
             template_name: "xyz".into(),
             input: json_with_positions::parse_json_value(r#"{"a":"achanged","b":"bchanged"}"#).unwrap(),
+            end_line: 0,
         });
         // resourceA has been deployed before, it should cause an update
         state.resources.insert("resourceA".to_string(), ResourceInState {
@@ -1649,6 +1667,7 @@ template xyz
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+            end_line: 0,
         });
         // B has been deployed before, it should cause an update
         // but B depends on A, and so we dont know if it should actually be updated or not:
@@ -1658,6 +1677,7 @@ template xyz
             resource_name: "B".into(),
             template_name: "different template".into(),
             input: json_with_positions::parse_json_value(r#"{"resourceA": $.A.output}"#).unwrap(),
+            end_line: 0,
         });
         state.resources.insert("B".to_string(), ResourceInState {
             template_name: "template".to_string(),
@@ -1686,6 +1706,7 @@ template xyz
             resource_name: "A".into(),
             template_name: "template".into(),
             input: json_with_positions::parse_json_value(r#"{"this": "will be echoed"}"#).unwrap(),
+            end_line: 0,
         });
         // A was previously in state, therefore becomes an update
         let mut resource_in_state = ResourceInState::default();

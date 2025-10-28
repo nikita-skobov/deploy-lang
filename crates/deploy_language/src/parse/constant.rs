@@ -10,6 +10,7 @@ pub struct ConstSection {
     /// a unique identifier for this constant item
     pub const_name: StringAtLine,
     pub body: Value,
+    pub end_line: usize,
 }
 
 
@@ -52,7 +53,8 @@ pub fn parse_const_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Resu
         }
     };
 
-    dpl.constants.push(ConstSection { const_name, body });
+    let end_line = section.end_line;
+    dpl.constants.push(ConstSection { const_name, body, end_line });
     Ok(())
 }
 

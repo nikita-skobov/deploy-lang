@@ -4,6 +4,7 @@ use crate::parse::{constant::ConstSection, function::FunctionSection, resource::
 
 pub mod parse;
 pub mod validate;
+pub mod lang_features;
 
 #[derive(Default, Debug)]
 pub struct DplFile {

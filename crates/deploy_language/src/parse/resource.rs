@@ -16,6 +16,7 @@ pub struct ResourceSection {
     /// name of the template that this resource should be passed into
     pub template_name: StringAtLine,
     pub input: Value,
+    pub end_line: usize,
 }
 
 pub fn parse_resource_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
@@ -60,10 +61,12 @@ pub fn parse_resource_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
             diag.span.end.line = section.end_line;
             diag            
         })?;
+    let end_line = section.end_line;
     let parsed = ResourceSection {
         resource_name,
         template_name,
         input,
+        end_line,
     };
     dpl.resources.push(parsed);
     Ok(())
