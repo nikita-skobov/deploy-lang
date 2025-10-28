@@ -146,16 +146,28 @@ pub enum ArgTransform {
     /// this is usually used by "... $.input" where the resource object's input
     /// is a json object. destructuring only works for objects, and is an error
     /// if it is applied to non-objects.
-    Destructure(jsonpath_rust::parser::model::JpQuery),
+    Destructure { kw: StringAtLine, val: jsonpath_rust::parser::model::JpQuery },
     /// represented in .dpl file by "! field-name"
     /// this transformation removes the field from the arg set, if present
     /// if the arg set does not have the field, it is a no-op
-    Remove(StringAtLine),
+    Remove { kw: StringAtLine, val: StringAtLine },
     /// represented in .dpl file by "field-name $.query"
     /// this transform takes the provided json path query
     /// evaluates it from the resource object, and sets the result value to the field
     /// of the given name
-    Add(StringAtLine, jsonpath_rust::parser::model::JpQuery),
+    Add { kw: StringAtLine, key: StringAtLine, val: jsonpath_rust::parser::model::JpQuery },
+}
+
+impl ArgTransform {
+    pub fn destructure(val: jsonpath_rust::parser::model::JpQuery) -> Self {
+        Self::Destructure { kw: Default::default(), val }
+    }
+    pub fn remove(val: StringAtLine) -> Self {
+        Self::Remove { kw: Default::default(), val }
+    }
+    pub fn add(key: StringAtLine, val: jsonpath_rust::parser::model::JpQuery) -> Self {
+        Self::Add { kw: Default::default(), key, val }
+    }
 }
 
 #[derive(Enumdoc, Debug, PartialEq, Clone)]
@@ -657,17 +669,17 @@ pub fn parse_command<'a>(
                             .map_err(|e| {
                                 SpannedDiagnostic::from_str_at_line(right, format!("failed to parse json path query ('{}') of destructure arg transform: {:?}", right, e))
                             })?;
-                        arg_transforms.push(ArgTransform::Destructure(path_query));
+                        arg_transforms.push(ArgTransform::Destructure{ kw: left.to_owned(), val: path_query });
                     }
                     "!" => {
-                        arg_transforms.push(ArgTransform::Remove(right.trim().to_owned()));
+                        arg_transforms.push(ArgTransform::Remove { kw: left.to_owned(), val: right.trim().to_owned() });
                     }
                     _field_name => {
                         let path_query = jsonpath_rust::parser::parse_json_path(right.s)
                             .map_err(|e| {
                                 SpannedDiagnostic::from_str_at_line(right, format!("failed to parse json path query ('{}') of add arg transform: {:?}", right, e))
                             })?;
-                        arg_transforms.push(ArgTransform::Add(left.trim().to_owned(), path_query));
+                        arg_transforms.push(ArgTransform::Add { kw: left.to_owned(), key: left.trim().to_owned(), val: path_query });
                     }
                 }
             }
@@ -991,15 +1003,15 @@ resource xyz(resourceA)
         assert_eq!(update.cli_commands.len(), 2);
         let first = update.cli_commands.remove(0);
         assert_eq!(first.cmd.as_command().arg_transforms.len(), 1);
-        assert_matches!(&first.cmd.as_command().arg_transforms[0], ArgTransform::Add(x, y) => {
-            assert_eq!(x.s, "abc");
-            assert_eq!(y.to_string(), "$outputsomeval");
+        assert_matches!(&first.cmd.as_command().arg_transforms[0], ArgTransform::Add { key, val, .. } => {
+            assert_eq!(key.s, "abc");
+            assert_eq!(val.to_string(), "$outputsomeval");
         });
         let next = update.cli_commands.remove(0);
         assert_eq!(next.cmd.as_command().arg_transforms.len(), 1);
-        assert_matches!(&next.cmd.as_command().arg_transforms[0], ArgTransform::Add(x, y) => {
-            assert_eq!(x.s, "xyz");
-            assert_eq!(y.to_string(), "$accum");
+        assert_matches!(&next.cmd.as_command().arg_transforms[0], ArgTransform::Add { key, val, .. } => {
+            assert_eq!(key.s, "xyz");
+            assert_eq!(val.to_string(), "$accum");
         });
     }
 
@@ -1157,11 +1169,17 @@ template aws_lambda_function
             assert_eq!(&query[0].to_string(), "$inputfunctionname");
         });
         assert_eq!(second_command.cmd.as_command().arg_transforms.len(), 2);
-        assert_matches!(&second_command.cmd.as_command().arg_transforms[0], ArgTransform::Destructure(d) => {
-            assert_eq!(d.to_string(), "$input");
+        assert_matches!(&second_command.cmd.as_command().arg_transforms[0], ArgTransform::Destructure { val, kw } => {
+            assert_eq!(kw.line, 12);
+            assert_eq!(kw.col, 12);
+            assert_eq!(kw.s, "...");
+            assert_eq!(val.to_string(), "$input");
         });
-        assert_matches!(&second_command.cmd.as_command().arg_transforms[1], ArgTransform::Remove(r) => {
-            assert_eq!(r, "zip-file");
+        assert_matches!(&second_command.cmd.as_command().arg_transforms[1], ArgTransform::Remove { val, kw } => {
+            assert_eq!(kw.line, 13);
+            assert_eq!(kw.col, 12);
+            assert_eq!(kw.s, "!");
+            assert_eq!(val, "zip-file");
         });
     }
 }

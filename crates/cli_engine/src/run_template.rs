@@ -490,7 +490,7 @@ pub fn create_arg_set(
     let mut arg_set = ArgSet::new();
     for transform in arg_transforms {
         match transform {
-            ArgTransform::Destructure(jp_query) => {
+            ArgTransform::Destructure { val: jp_query , .. } => {
                 let val = command_state.evaluate_arg_transform(name, jp_query)?;
                 let map = match val {
                     serde_json::Value::Object(map) => map,
@@ -509,7 +509,7 @@ pub fn create_arg_set(
                     arg_set.push(ArgInstruction { opt_type, name: key, value });
                 }
             }
-            ArgTransform::Remove(string_at_line) => {
+            ArgTransform::Remove { val: string_at_line, .. } => {
                 // TODO: should remove remove all, last or first occurrence of this key?
                 // for now i think makes sense to only remove the last found.
                 // perhaps a different remove syntax like "!! xyz" can remove all occurrances
@@ -517,7 +517,7 @@ pub fn create_arg_set(
                     arg_set.remove(index);
                 }
             }
-            ArgTransform::Add(string_at_line, jp_query) => {
+            ArgTransform::Add { key: string_at_line, val: jp_query, .. } => {
                 // get value from user's input:
                 let value = command_state.evaluate_arg_transform(name, jp_query)?;
                 arg_set.push(ArgInstruction { opt_type: ArgOptType::Verbatim, name: string_at_line.s.clone(), value });
@@ -884,7 +884,7 @@ mod test {
     fn can_create_arg_set_destructure_long_short() {
         let cs = CommandState::new(serde_json::json!({"a": "b", "long": 123.4}), None);
         let arg_transforms = vec![
-            ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap())
+            ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap())
         ];
         let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
         assert_eq!(arg_set.len(), 2);
@@ -905,7 +905,7 @@ mod test {
         let mut verbatim_s = StringAtLine::default();
         verbatim_s.s = "verbatim".to_string();
         let arg_transforms = vec![
-            ArgTransform::Add(verbatim_s, jsonpath_rust::parser::parse_json_path("$.input.a").unwrap()),
+            ArgTransform::add(verbatim_s, jsonpath_rust::parser::parse_json_path("$.input.a").unwrap()),
         ];
         let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
         assert_eq!(arg_set.len(), 1);
@@ -922,12 +922,12 @@ mod test {
         verbatim_s.s = "verbatim".to_string();
         let arg_transforms = vec![
             // verbatim xyz
-            ArgTransform::Add(verbatim_s.clone(), jsonpath_rust::parser::parse_json_path("$.input.xyz").unwrap()),
+            ArgTransform::add(verbatim_s.clone(), jsonpath_rust::parser::parse_json_path("$.input.xyz").unwrap()),
             // --verbatim b
-            ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()),
+            ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()),
             // removes the last occurrance of key "verbatim" which should
             // remove the one that added --verbatim b
-            ArgTransform::Remove(verbatim_s.clone())
+            ArgTransform::remove(verbatim_s.clone())
         ];
         let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
         assert_eq!(arg_set.len(), 2);
@@ -942,12 +942,12 @@ mod test {
         // now in reverse, we destructure first, then add. it should remove the added "verbatim" key
         let arg_transforms = vec![
             // --verbatim b
-            ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()),
+            ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()),
             // verbatim xyz
-            ArgTransform::Add(verbatim_s.clone(), jsonpath_rust::parser::parse_json_path("$.input.xyz").unwrap()),
+            ArgTransform::add(verbatim_s.clone(), jsonpath_rust::parser::parse_json_path("$.input.xyz").unwrap()),
             // removes the last occurrance of key "verbatim" which should
             // remove the one that added --verbatim b
-            ArgTransform::Remove(verbatim_s.clone())
+            ArgTransform::remove(verbatim_s.clone())
         ];
         let arg_set = create_arg_set("somename", &cs, &arg_transforms).unwrap();
         assert_eq!(arg_set.len(), 2);

@@ -1398,7 +1398,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         dpl.templates.push(template);
         let mut out_state = perform_update(logger, dpl, state).await.expect("it should not error");
@@ -1444,7 +1444,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         template.update = Some(Default::default());
         dpl.templates.push(template);
@@ -1490,7 +1490,7 @@ mod test {
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$.input").unwrap()));
         let cli_cmd_clone = cli_cmd.clone();
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         template.update = Some(Default::default());
@@ -1689,7 +1689,7 @@ template xyz
         template.template_name.s = "template".to_string();
         let mut cli_cmd = CliCommand::default();
         cli_cmd.command.s = "echo".to_string();
-        cli_cmd.arg_transforms.push(ArgTransform::Destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
+        cli_cmd.arg_transforms.push(ArgTransform::destructure(jsonpath_rust::parser::parse_json_path("$").unwrap()));
         template.create.cli_commands.push(CliCommandWithDirectives { cmd: cli_cmd.into(), ..Default::default() });
         dpl.templates.push(template);
         let err = perform_update(logger, dpl, state).await.expect_err("it should error");
