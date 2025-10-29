@@ -582,13 +582,13 @@ mod test {
 
     macro_rules! same {
         ($($x:literal),*) => {
-            Directive::Same { kw: Default::default(), query: vec![$(jsonpath_rust::parser::parse_json_path($x).unwrap(),)*]}
+            Directive::Same { kw: Default::default(), query_src: Default::default(), query: vec![$(jsonpath_rust::parser::parse_json_path($x).unwrap(),)*]}
         };
     }
 
     macro_rules! diff {
         ($($x:literal),*) => {
-            Directive::Diff { kw: Default::default(), query: vec![$(jsonpath_rust::parser::parse_json_path($x).unwrap(),)*]}
+            Directive::Diff { kw: Default::default(), query_src: Default::default(), query: vec![$(jsonpath_rust::parser::parse_json_path($x).unwrap(),)*]}
         };
     }
 

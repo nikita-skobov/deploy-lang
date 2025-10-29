@@ -194,7 +194,7 @@ pub enum Directive {
     /// ```
     /// then the command below this directive will be ran if the value of $.c is different from prev and current
     /// OR if the value of $.a AND the value of $.b is different from prev and current
-    Diff { kw: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
+    Diff { kw: StringAtLine, query_src: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
     /// only relevant to update commands: a same directitve
     /// requires that the value the query resolves to must be the same
     /// as the value from the last time this resource was transitioned.
@@ -209,7 +209,7 @@ pub enum Directive {
     /// 
     /// then the command below this directive will be ran if the value of $.c is the same in prev and current
     /// OR if the value of $.a AND the value of $.b is the same in prev and current
-    Same { kw: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
+    Same { kw: StringAtLine, query_src: StringAtLine, query: Vec<jsonpath_rust::parser::model::JpQuery> },
 
     /// causes the command's output to be ignored entirely and not merged into the accumulator.
     /// this directive doesnt take any args. it should just be the directive keyword eg:
@@ -230,7 +230,7 @@ pub enum Directive {
     /// the above example would run the command, merge into the accumulator,
     /// then after it merges, it reads the value of the accumulator "somefield"
     /// and it inserts that value again into the accumulator but at a different path "nested.fieldvalue"
-    Accum { kw: StringAtLine, src_path: jsonpath_rust::parser::model::JpQuery, accum_path: jsonpath_rust::parser::model::JpQuery },
+    Accum { kw: StringAtLine, src: StringAtLine, accum: StringAtLine, src_path: jsonpath_rust::parser::model::JpQuery, accum_path: jsonpath_rust::parser::model::JpQuery },
 
     /// similar to the `@accum` directive, but `@insert` does not merge the output of this command into the accumulator. instead,
     /// `@insert` will capture the output of the command and only insert into the destination path of the accumulator
@@ -256,7 +256,7 @@ pub enum Directive {
     /// # syntactic sugar. this does the same as the above:
     /// @insert $.dest_path
     /// ```
-    Insert { kw: StringAtLine, src_path: Option<jsonpath_rust::parser::model::JpQuery>, dest_path: jsonpath_rust::parser::model::JpQuery },
+    Insert { kw: StringAtLine, src_path_src: Option<StringAtLine>, dest_path_src: StringAtLine, src_path: Option<jsonpath_rust::parser::model::JpQuery>, dest_path: jsonpath_rust::parser::model::JpQuery },
     // TODO: support a diff same directive that ands together same and diff conditions
     // as otherwise there's no way to support running a command with multiple same/diff conditions
     // anded together. at the root level they are ORed together
@@ -404,18 +404,18 @@ pub fn parse_directive<'a>(
         "diff" => {
             let query = parse_json_directive_query(rest.s)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse diff directive json path query: {:?}", e)))?;
-            Ok(Directive::Diff { kw: kw.to_owned(), query })
+            Ok(Directive::Diff { kw: kw.to_owned(), query, query_src: rest.to_owned() })
         }
         "same" => {
             let query = parse_json_directive_query(rest.s)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse same directive json path query: {:?}", e)))?;
-            Ok(Directive::Same { kw: kw.to_owned(), query })
+            Ok(Directive::Same { kw: kw.to_owned(), query, query_src: rest.to_owned() })
         }
         "dropoutput" => {
             Ok(Directive::DropOutput { kw: kw.to_owned() })
         }
         "accum" => {
-            let val = json_with_positions::parse_json_value(rest.s)
+            let val = json_with_positions::parse_json_value_str_at_line(rest)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse accum directive as array of two json paths: {:?}", e)))?;
             let mut array = match val {
                 json_with_positions::Value::Array { val, .. } => val,
@@ -439,10 +439,10 @@ pub fn parse_directive<'a>(
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", first_path_str.s, e)))?;
             let accum_path = jsonpath_rust::parser::parse_json_path(second_path_str.as_str())
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", second_path_str.s, e)))?;
-            Ok(Directive::Accum { kw: kw.to_owned(), src_path, accum_path })
+            Ok(Directive::Accum { kw: kw.to_owned(), src: first_path_str, accum: second_path_str, src_path, accum_path })
         }
         "insert" => {
-            let val = json_with_positions::parse_json_value(rest.s)
+            let val = json_with_positions::parse_json_value_str_at_line(rest)
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse insert directive as json: {:?}", e)))?;
             let mut array = match val {
                 json_with_positions::Value::Array { val, .. } => val,
@@ -450,7 +450,7 @@ pub fn parse_directive<'a>(
                     // in this syntactic sugar, the user only specified the dest path:
                     let dest_path = jsonpath_rust::parser::parse_json_path(val.as_str())
                         .map_err(|e| SpannedDiagnostic::from_str_at_line(&val, format!("failed to parse '{}' as json path query: {:?}", val, e)))?;
-                    return Ok(Directive::Insert { kw: kw.to_owned(), src_path: None, dest_path })
+                    return Ok(Directive::Insert { kw: kw.to_owned(), src_path_src: None, src_path: None, dest_path, dest_path_src: val })
                 }
                 x => return Err(SpannedDiagnostic::from_str_at_line(rest, format!("insert directive must be followed by either a json path query, or a json array of two json path queries. instead found {:?}", x)))
             };
@@ -472,7 +472,7 @@ pub fn parse_directive<'a>(
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", first_path_str.s, e)))?;
             let dest_path = jsonpath_rust::parser::parse_json_path(second_path_str.as_str())
                 .map_err(|e| SpannedDiagnostic::from_str_at_line(rest, format!("failed to parse '{}' as json path query: {:?}", second_path_str.s, e)))?;
-            Ok(Directive::Insert { kw: kw.to_owned(), src_path: Some(src_path), dest_path })
+            Ok(Directive::Insert { kw: kw.to_owned(), src_path_src: Some(first_path_str), dest_path_src: second_path_str, src_path: Some(src_path), dest_path })
         }
         unknown_kw => {
             Err(SpannedDiagnostic::from_str_at_line(kw, format!("unknown directive '{}'", unknown_kw)))
@@ -906,11 +906,17 @@ template something
         assert_eq!(dpl.templates.len(), 1);
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
         assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
-        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Accum { kw, src_path, accum_path } => {
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Accum { kw, src_path, accum_path, src, accum } => {
             assert_eq!(kw.s, "accum");
             assert_eq!(kw.line, 3);
             assert_eq!(kw.col, 5);
             assert_eq!(src_path.to_string(), "$inputxyz");
+            assert_eq!(src, "$.input.xyz");
+            assert_eq!(src.line, 3);
+            assert_eq!(src.col, 12);
+            assert_eq!(accum, "$.some.accum.value");
+            assert_eq!(accum.line, 3);
+            assert_eq!(accum.col, 25);
             assert_eq!(accum_path.to_string(), "$someaccumvalue");
         });
     }
@@ -927,11 +933,17 @@ template something
         assert_eq!(dpl.templates.len(), 1);
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
         assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
-        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Insert { kw, src_path, dest_path } => {
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Insert { kw, src_path, dest_path, src_path_src, dest_path_src } => {
             assert_eq!(kw.s, "insert");
             assert_eq!(kw.line, 3);
             assert_eq!(kw.col, 5);
             assert_eq!(src_path.clone().unwrap().to_string(), "$inputxyz");
+            assert_eq!(src_path_src.clone().unwrap().s, "$.input.xyz");
+            assert_eq!(src_path_src.clone().unwrap().line, 3);
+            assert_eq!(src_path_src.clone().unwrap().col, 13);
+            assert_eq!(dest_path_src.s, "$.some.accum.value");
+            assert_eq!(dest_path_src.line, 3);
+            assert_eq!(dest_path_src.col, 26);
             assert_eq!(dest_path.to_string(), "$someaccumvalue");
         });
     }
@@ -948,11 +960,15 @@ template something
         assert_eq!(dpl.templates.len(), 1);
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
         assert_eq!(dpl.templates[0].create.cli_commands[0].directives.len(), 1);
-        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Insert { kw, src_path, dest_path } => {
+        assert_matches!(&dpl.templates[0].create.cli_commands[0].directives[0], Directive::Insert { kw, src_path, dest_path, src_path_src, dest_path_src } => {
             assert_eq!(kw.s, "insert");
             assert_eq!(kw.line, 3);
             assert_eq!(kw.col, 5);
             assert!(src_path.is_none());
+            assert!(src_path_src.is_none());
+            assert_eq!(dest_path_src, "$.some.accum.value");
+            assert_eq!(dest_path_src.line, 3);
+            assert_eq!(dest_path_src.col, 12);
             assert_eq!(dest_path.to_string(), "$someaccumvalue");
         });
     }
@@ -968,7 +984,7 @@ template something
         let mut errs = parse_and_validate(document).expect_err("it should error");
         assert_eq!(errs.len(), 1);
         let err = errs.remove(0);
-        assert_eq!(err.message, "insert directive must be followed by either a json path query, or a json array of two json path queries. instead found String { pos: Position { line: 0, column: 0 }, val: StringAtLine { s: \"hello\", line: 0, col: 0 } }");
+        assert_eq!(err.message, "insert directive must be followed by either a json path query, or a json array of two json path queries. instead found String { pos: Position { line: 3, column: 12 }, val: StringAtLine { s: \"hello\", line: 3, col: 12 } }");
     }
 
     #[test]
@@ -1034,27 +1050,27 @@ template something
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 3);
         let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 1);
-        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query, .. } => {
             assert_eq!(kw.s, "diff");
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$");
         });
         let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 1);
-        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query, .. } => {
             assert_eq!(kw.s, "diff");
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$input");
         });
         let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 2);
-        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query, .. } => {
             assert_eq!(kw.s, "diff");
             // TODO: wrapper library for jsonpath_rust: its to_string impl omits segment delimiters...
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputsomething1");
         });
-        assert_matches!(next.directives.remove(0), Directive::Same { kw, query } => {
+        assert_matches!(next.directives.remove(0), Directive::Same { kw, query, .. } => {
             assert_eq!(kw.s, "same");
             assert_eq!(query.len(), 1);
             assert_eq!(&query[0].to_string(), "$inputotherThing");
@@ -1077,13 +1093,13 @@ template something
         assert_eq!(dpl.templates[0].create.cli_commands.len(), 1);
         let mut next = dpl.templates[0].create.cli_commands.remove(0);
         assert_eq!(next.directives.len(), 2);
-        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query } => {
+        assert_matches!(next.directives.remove(0), Directive::Diff { kw, query, .. } => {
             assert_eq!(kw.s, "diff");
             assert_eq!(query.len(), 2);
             assert_eq!(&query[0].to_string(), "$a");
             assert_eq!(&query[1].to_string(), "$");
         });
-        assert_matches!(next.directives.remove(0), Directive::Same { kw, query } => {
+        assert_matches!(next.directives.remove(0), Directive::Same { kw, query, .. } => {
             assert_eq!(kw.s, "same");
             assert_eq!(query.len(), 2);
             assert_eq!(&query[0].to_string(), "$");
