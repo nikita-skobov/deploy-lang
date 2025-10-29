@@ -938,11 +938,56 @@ pub fn parse_json_value<'a>(s: &'a str) -> Result<Value, String> {
     parse_json_value_from_iter_no_recursion(&mut char_iter)
 }
 
+pub fn parse_json_value_str_at_line<'a>(s: StrAtLine<'a>) -> Result<Value, String> {
+    let s_arr = [s];
+    let iter = s_arr.iter().map(|x| *x);
+    let iter = CharIterator::new(iter);
+    let mut char_iter = iter.peekable();
+    parse_json_value_from_iter_no_recursion(&mut char_iter)
+}
+
 #[cfg(test)]
 mod test {
     use assert_matches::assert_matches;
     use std::path::PathBuf;
     use super::*;
+
+    #[test]
+    fn can_parse_from_str_at_line() {
+        let s = StrAtLine {
+            s: "$.something",
+            line: 10,
+            col: 100,
+        };
+        let out = parse_json_value_str_at_line(s).unwrap();
+        assert_matches!(out, Value::JsonPath { val, .. } => {
+            assert_eq!(val.line, 10);
+            assert_eq!(val.col, 100);
+        });
+    }
+
+    #[test]
+    fn can_parse_from_str_at_line_obj() {
+        let s = StrAtLine {
+            s: r#"{ "hello": "world" }"#,
+            line: 10,
+            col: 100,
+        };
+        let out = parse_json_value_str_at_line(s).unwrap();
+        assert_matches!(out, Value::Object { val, .. } => {
+            for (key, val) in val.iter() {
+                assert_eq!(key.line, 10);
+                assert_eq!(key.col, 102);
+                assert_eq!(key, "hello");
+
+                assert_matches!(val, Value::String { val, .. } => {
+                    assert_eq!(val.line, 10);
+                    assert_eq!(val.col, 111);
+                    assert_eq!(val, "world");
+                });
+            }
+        });
+    }
 
     #[test]
     fn can_replace_json_paths_in_place() {
