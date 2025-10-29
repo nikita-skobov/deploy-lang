@@ -104,7 +104,7 @@ impl<'a> HoverInfo for &'a StateSection {
 
     fn get_hover_info(&self, _ctx: &Self::Ctx, pos: Pos) -> Option<String> {
         // state can only give hover info for the 'file' keyword:
-        if self.file.in_range(pos) {
+        if !self.file_kw.in_range(pos) {
             return None
         }
         return Some(format!("the file where state is read/written from. if the file doesnt exist, it will be created."))
@@ -244,8 +244,16 @@ state
     fn can_get_hover_hint_for_state_file_keyword() {
         let sections = get_sections_or_parsed(DOCUMENT);
         let walk = WalkContext { sections };
-        let hover_info = walk.get_hover_info(&walk, Pos { line: 20, col: 22 }).unwrap();
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 20, col: 2 }).unwrap();
         let expected_substr = "the file where state";
         assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
+    }
+
+    #[test]
+    fn state_keyword_does_not_give_file_hint() {
+        let sections = get_sections_or_parsed(DOCUMENT);
+        let walk = WalkContext { sections };
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 19, col: 22 });
+        assert!(hover_info.is_none(), "expected to not get anything, found: {:?}", hover_info);
     }
 }
