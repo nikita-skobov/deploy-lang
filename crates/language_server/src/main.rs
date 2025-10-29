@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::error::Error;
 
+use deploy_language::get_sections_or_parsed;
+use deploy_language::lang_features::{HoverInfo, Pos, WalkContext};
 use deploy_language::parse::template::{Builtin, Directive};
 use deploy_language::parse::{Logger, Section, SpannedDiagnostic};
 use enumdoc::Enumdoc;
@@ -431,6 +433,21 @@ pub fn handle_hover_request<'a>(
     // at the start of the line, and their cursor is currently after that first character
     // so for us to look up the character they just typed, we'd need to get the character at index 0
     let column = character as usize;
+
+    let sections = get_sections_or_parsed(&doc.doc);
+    let walk = WalkContext { sections };
+    if let Some(hover_hint) = walk.get_hover_info(&walk, Pos { line: line_index, col: column }) {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: hover_hint,
+            }),
+            range: None
+        })
+    }
+    // for now we fall through to the old way of giving hover hints, but in the future we should just do the walk
+    // and return None if not found
+
     // get the section that contains the hover pos
     let section = doc.parsed.iter().find(|x| line_index >= x.start_line && line_index <= x.end_line)?;
     match section.typ.s {
