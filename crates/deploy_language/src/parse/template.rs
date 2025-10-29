@@ -299,6 +299,18 @@ pub enum Directive {
     // SameDiff { kw: StringAtLine, same: Vec<jsonpath_rust::parser::model::JpQuery>, diff: Vec<jsonpath_rust::parser::model::JpQuery> },
 }
 
+impl Directive {
+    pub fn keyword(&self) -> &StringAtLine {
+        match self {
+            Directive::Diff { kw, .. } |
+            Directive::Same { kw, .. } |
+            Directive::DropOutput { kw } |
+            Directive::Accum { kw, .. } |
+            Directive::Insert { kw, .. } => kw,
+        }
+    }
+}
+
 pub fn parse_template_section_as_value<'a>(section: &Section<'a>) -> Result<TemplateSection, SpannedDiagnostic> {
 let template_name = section.parameters
         .ok_or("must have a template name")

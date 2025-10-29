@@ -1,8 +1,9 @@
 //! traits and implementations for language features to make hover/completions easier
 
+use enumdoc::Enumdoc;
 use str_at_line::{StrAtLine, StringAtLine};
 
-use crate::{parse::{self, state::StateSection}, ParsedSection, SectionOrParsed};
+use crate::{parse::{self, state::StateSection, template::{Directive, TemplateSection, Transition}}, ParsedSection, SectionOrParsed};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pos {
@@ -99,6 +100,53 @@ impl<'a> InRange for SectionOrParsed<'a> {
     }
 }
 
+impl InRange for Transition {
+    fn in_range(&self, pos: Pos) -> bool {
+        pos.line >= self.start_line && pos.line <= self.end_line
+    }
+}
+
+impl InRange for Directive {
+    fn in_range(&self, pos: Pos) -> bool {
+        // TODO: this needs to change if/when multi line directives are supported. currently this only checks
+        // for an exact line count match
+        let (line, start_col, end_col) = match self {
+            Directive::Diff { kw, query_src, .. } =>
+                (kw.line, kw.col, query_src.col + query_src.as_str().chars().count()),
+            Directive::Same { kw, query_src, .. } =>
+                (kw.line, kw.col, query_src.col + query_src.as_str().chars().count()),
+            Directive::DropOutput { kw } =>
+                (kw.line, kw.col, kw.col + kw.as_str().chars().count()),
+            Directive::Accum { kw, accum, .. } => 
+                (kw.line, kw.col, accum.col + accum.as_str().chars().count()),
+            Directive::Insert { kw, dest_path_src, .. } => 
+                (kw.line, kw.col, dest_path_src.col + dest_path_src.as_str().chars().count())
+        };
+        pos.line == line && pos.col >= start_col && pos.col <= end_col
+    }
+}
+
+impl<'a> HoverInfo for &'a Directive {
+    type Ctx = (&'a Transition, &'a TemplateSection, &'a WalkContext<'a>);
+
+    fn get_hover_info(&self, _ctx: &Self::Ctx, pos: Pos) -> Option<String> {
+        // first check if its hover info for the directive itself:
+        let kw = self.keyword();
+        if kw.in_range(pos) {
+            return Directive::variant_doc(kw.as_str()).map(|x| x.to_string())
+        }
+        // otherwise its hovering over some value after the directive keyword
+        // match self {
+        //     Directive::Diff { kw, query_src, query } => todo!(),
+        //     Directive::Same { kw, query_src, query } => todo!(),
+        //     Directive::DropOutput { kw } => todo!(),
+        //     Directive::Accum { kw, src, accum, src_path, accum_path } => todo!(),
+        //     Directive::Insert { kw, src_path_src, dest_path_src, src_path, dest_path } => todo!(),
+        // }
+        None
+    }
+}
+
 impl<'a> HoverInfo for &'a StateSection {
     type Ctx = WalkContext<'a>;
 
@@ -108,6 +156,69 @@ impl<'a> HoverInfo for &'a StateSection {
             return None
         }
         return Some(format!("the file where state is read/written from. if the file doesnt exist, it will be created."))
+    }
+}
+
+impl<'a> HoverInfo for &'a Transition {
+    type Ctx = (&'a TemplateSection, &'a WalkContext<'a>);
+
+    fn get_hover_info(&self, ctx: &Self::Ctx, pos: Pos) -> Option<String> {
+        if self.kw.in_range(pos) {
+            let mut hint_base = format!("transition type '{}':\n", self.kw);
+            let specific = match self.kw.as_str() {
+                "create" => format!("this transition runs when a resource exists in the source code file, but not in state"),
+                "update" => format!("this transition runs when a resource exists both in state, and in the source code file"),
+                "delete" => format!("this transition runs when a resource exists in state, but has been removed from the source code file"),
+                // TODO: update this
+                // if new transition types are added
+                x => return Some(format!("unknown transition type '{}'", x)),
+            };
+            hint_base.push_str(&specific);
+            return Some(hint_base)
+        }
+        // TODO: handle directives when directives are supported above a transition type keyword
+        // if self.directives.in_range() ...
+        for command in self.cli_commands.iter() {
+            for directive in command.directives.iter() {
+                if directive.in_range(pos) {
+                    return directive.get_hover_info(&(self, ctx.0, ctx.1), pos);
+                }
+            }
+            // let (start_line, end_line) = command.cmd.start_end();
+            // if pos.line >= start_line && pos.line <= end_line {
+            //     match &command.cmd {
+            //         parse::template::CmdOrBuiltin::Command(cli_command) => todo!(),
+            //         parse::template::CmdOrBuiltin::Builtin(builtin) => todo!(),
+            //     };
+            // }
+        }
+        return None;
+    }
+}
+
+impl<'a> HoverInfo for &'a TemplateSection {
+    type Ctx = WalkContext<'a>;
+
+    fn get_hover_info(&self, ctx: &Self::Ctx, pos: Pos) -> Option<String> {
+        if self.template_name.in_range(pos) {
+            // TODO: allow comments on top of sections, and return as doc comment when hovering the template
+            return Some(format!("template name: '{}'", self.template_name))
+        }
+        if self.create.in_range(pos) {
+            let transition = &self.create;
+            return transition.get_hover_info(&(self, ctx), pos);
+        }
+        if let Some(update) = &self.update {
+            if update.in_range(pos) {
+                return update.get_hover_info(&(self, ctx), pos);
+            }
+        }
+        if let Some(delete) = &self.delete {
+            if delete.in_range(pos) {
+                return delete.get_hover_info(&(self, ctx), pos);
+            }
+        }
+        None
     }
 }
 
@@ -148,8 +259,8 @@ impl<'a> HoverInfo for WalkContext<'a> {
                     // call the hover func for the specific type of section:
                     SectionOrParsed::Parsed(parsed_section) => match parsed_section {
                         ParsedSection::State(state_section) => return state_section.get_hover_info(ctx, pos),
+                        ParsedSection::Template(template_section) => return template_section.get_hover_info(ctx, pos),
                         // TODO: implement walking hover info for these section types:
-                        ParsedSection::Template(_template_section) => return None,
                         ParsedSection::Resource(_resource_section) => return None,
                         ParsedSection::Function(_function_section) => return None,
                         ParsedSection::Const(_const_section) => return None,
@@ -246,6 +357,32 @@ state
         let walk = WalkContext { sections };
         let hover_info = walk.get_hover_info(&walk, Pos { line: 20, col: 2 }).unwrap();
         let expected_substr = "the file where state";
+        assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
+    }
+
+    #[test]
+    fn can_get_hover_hint_for_transition_type_keyword() {
+        let sections = get_sections_or_parsed(DOCUMENT);
+        let walk = WalkContext { sections };
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 7, col: 4 }).unwrap();
+        let expected_substr = "transition type 'create':\nthis transition runs when a resource exists in the source code file, but not in state";
+        assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
+    }
+
+    #[test]
+    fn can_get_hover_hint_for_transition_directive() {
+        let doc = r#"
+template mee_templatee
+  create
+    @dropoutput
+    echo hello
+"#;
+        let sections = get_sections_or_parsed(doc);
+        let walk = WalkContext { sections };
+        let expected_substr = "causes the command\\'s output to be ignored entirely";
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 3, col: 5 }).unwrap();
+        assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 3, col: 15 }).unwrap();
         assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
     }
 
