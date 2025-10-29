@@ -27,6 +27,7 @@ pub struct TemplateSection {
 
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Transition {
+    pub kw: StringAtLine,
     pub start_line: usize,
     pub end_line: usize,
     /// a transition can have directives itself, in addition
@@ -349,6 +350,12 @@ pub fn parse_lines_as_transition<'a>(
     transition_type: &str,
 ) -> Result<(), SpannedDiagnostic> {
     let start_line = current_line.line;
+    // caller already guaranteed current line starts with "create"/"update"/"delete"
+    // so split on space and that is now the keyword:
+    let kw = match current_line.split_once(" ") {
+        Some((kw, _)) => kw.to_owned(),
+        _ => current_line.to_owned(),
+    };
     if transition_type == "create" && template_section.create_was_set {
         // can only have 1 create subsection:
         let line_index = current_line.line;
@@ -387,6 +394,7 @@ pub fn parse_lines_as_transition<'a>(
     match transition_type {
         "create" => {
             template_section.create = Transition {
+                kw,
                 start_line,
                 end_line,
                 cli_commands: commands,
@@ -396,6 +404,7 @@ pub fn parse_lines_as_transition<'a>(
         }
         "update" => {
             template_section.update = Some(Transition {
+                kw,
                 start_line,
                 end_line,
                 cli_commands: commands,
@@ -404,6 +413,7 @@ pub fn parse_lines_as_transition<'a>(
         }
         "delete" | _ => {
             template_section.delete = Some(Transition {
+                kw,
                 start_line,
                 end_line,
                 cli_commands: commands,
@@ -794,6 +804,9 @@ template something
         assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.as_command().arg_transforms.len(), 3);
         assert_eq!(dpl.templates[0].create.start_line, 2);
         assert_eq!(dpl.templates[0].create.end_line, 6);
+        assert_eq!(dpl.templates[0].create.kw, "create");
+        assert_eq!(dpl.templates[0].create.kw.line, 2);
+        assert_eq!(dpl.templates[0].create.kw.col, 2);
     }
 
     #[test]
@@ -1065,6 +1078,9 @@ resource xyz(resourceA)
         assert_eq!(template.create.cli_commands.len(), 1);
         assert_eq!(template.create.cli_commands[0].cmd.as_command().command, "echo");
         let mut update = template.update.take().expect("it should have an update section");
+        assert_eq!(update.kw, "update");
+        assert_eq!(update.kw.line, 6);
+        assert_eq!(update.kw.col, 2);
         assert_eq!(update.directives.len(), 0);
         assert_eq!(update.cli_commands.len(), 2);
         let first = update.cli_commands.remove(0);
@@ -1208,6 +1224,10 @@ template aws_lambda_function
         assert_eq!(template.template_name.s, "aws_lambda_function");
         assert!(template.update.is_some());
         assert!(template.delete.is_some());
+        let delete = template.delete.unwrap();
+        assert_eq!(delete.kw, "delete");
+        assert_eq!(delete.kw.line, 14);
+        assert_eq!(delete.kw.col, 4);
         assert_eq!(template.create.cli_commands.len(), 1);
         let mut update_section = template.update.unwrap();
         assert_eq!(update_section.cli_commands.len(), 2);
