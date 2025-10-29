@@ -27,6 +27,8 @@ pub struct TemplateSection {
 
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct Transition {
+    pub start_line: usize,
+    pub end_line: usize,
     /// a transition can have directives itself, in addition
     /// to directives per each command
     pub directives: Vec<Directive>,
@@ -58,6 +60,19 @@ impl CmdOrBuiltin {
         match self {
             CmdOrBuiltin::Command(_) => panic!("it was a command but caller assumed it was a builtin"),
             CmdOrBuiltin::Builtin(builtin) => builtin,
+        }
+    }
+    /// returns the start and end line indices
+    pub fn start_end(&self) -> (usize, usize) {
+        match self {
+            CmdOrBuiltin::Command(cli_command) => {
+                (cli_command.command.line, cli_command.end_line)
+            },
+            CmdOrBuiltin::Builtin(builtin) => {
+                // builtins are on one line so its the same:
+                let line = builtin.get_line();
+                (line, line)
+            },
         }
     }
 }
@@ -123,6 +138,15 @@ pub enum Builtin {
     Random { kw: StringAtLine, r_type: StringAtLine, len: usize },
 }
 
+impl Builtin {
+    fn get_line(&self) -> usize {
+        match self {
+            Builtin::Strcat { kw, .. } |
+            Builtin::Random { kw, .. } => kw.line,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct CliCommand {
     /// name of the command to be ran
@@ -131,6 +155,7 @@ pub struct CliCommand {
     /// these should be defined statically in the dpl file
     pub prefix_args: Vec<StringAtLine>,
     pub arg_transforms: Vec<ArgTransform>,
+    pub end_line: usize,
 }
 
 /// a cli command can have a list of arg transforms
@@ -323,6 +348,7 @@ pub fn parse_lines_as_transition<'a>(
     lines: &mut std::iter::Peekable<std::slice::Iter<'_, StrAtLine<'a>>>,
     transition_type: &str,
 ) -> Result<(), SpannedDiagnostic> {
+    let start_line = current_line.line;
     if transition_type == "create" && template_section.create_was_set {
         // can only have 1 create subsection:
         let line_index = current_line.line;
@@ -349,14 +375,20 @@ pub fn parse_lines_as_transition<'a>(
             return Err(SpannedDiagnostic::new(format!("unexpected end of transition. must have at least 1 command"), current_line.line, 999));
         }
     };
+    let end_line = first_command.cmd.start_end().1;
     let mut commands = vec![first_command];
     // keep parsing commands that are part of this transition:
     while let Some(command) = parse_command(lines)? {
         commands.push(command);
     }
+    let end_line = if let Some(last) = commands.last() {
+        last.cmd.start_end().1
+    } else { end_line };
     match transition_type {
         "create" => {
             template_section.create = Transition {
+                start_line,
+                end_line,
                 cli_commands: commands,
                 ..Default::default()
             };
@@ -364,12 +396,16 @@ pub fn parse_lines_as_transition<'a>(
         }
         "update" => {
             template_section.update = Some(Transition {
+                start_line,
+                end_line,
                 cli_commands: commands,
                 ..Default::default()
             });
         }
         "delete" | _ => {
             template_section.delete = Some(Transition {
+                start_line,
+                end_line,
                 cli_commands: commands,
                 ..Default::default()
             });
@@ -694,7 +730,15 @@ pub fn parse_command<'a>(
         }
     }
 
-    let cmd = CliCommand { command, prefix_args, arg_transforms };
+    let end_line = match arg_transforms.last() {
+        Some(at) => match at {
+            ArgTransform::Destructure { kw, .. } => kw.line,
+            ArgTransform::Remove { kw, .. } => kw.line,
+            ArgTransform::Add { kw, .. } => kw.line,
+        }
+        None => command.line,
+    };
+    let cmd = CliCommand { command, prefix_args, arg_transforms, end_line };
     Ok(Some(CliCommandWithDirectives { directives, cmd: cmd.into() }))
 }
 
@@ -748,6 +792,8 @@ template something
         let valid_sections: Vec<_> = sections.drain(..).map(|x| x.unwrap()).collect();
         let dpl = sections_to_dpl_file(&valid_sections).expect("it should not err");
         assert_eq!(dpl.templates[0].create.cli_commands[0].cmd.as_command().arg_transforms.len(), 3);
+        assert_eq!(dpl.templates[0].create.start_line, 2);
+        assert_eq!(dpl.templates[0].create.end_line, 6);
     }
 
     #[test]
