@@ -19,7 +19,7 @@ pub struct ResourceSection {
     pub end_line: usize,
 }
 
-pub fn parse_resource_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+pub fn parse_resource_section_as_value<'a>(section: &Section<'a>) -> Result<ResourceSection, SpannedDiagnostic> {
     let params = section.parameters
         .ok_or("resource must have a name and a template")
         .map_err(|e| {
@@ -68,6 +68,11 @@ pub fn parse_resource_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
         input,
         end_line,
     };
+    Ok(parsed)
+}
+
+pub fn parse_resource_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+    let parsed = parse_resource_section_as_value(section)?;
     dpl.resources.push(parsed);
     Ok(())
 }

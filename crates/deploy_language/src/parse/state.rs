@@ -18,13 +18,7 @@ pub struct StateSection {
     pub end_line: usize,
 }
 
-pub fn parse_state_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
-    if dpl.state.is_some() {
-        let mut diag = SpannedDiagnostic::new(
-            "cannot have multiple state sections".to_string(), section.start_line, 999);
-        diag.span.end.line = section.end_line;
-        return Err(diag);
-    }
+pub fn parse_state_section_as_value<'a>(section: &Section<'a>) -> Result<StateSection, SpannedDiagnostic> {
     let file_line = section.body.iter().find(|x| x.s.starts_with("file"))
         .ok_or("state section missing 'file' option in its body").map_err(|e| {
             let mut diag = SpannedDiagnostic::new(e.to_string(), section.start_line, 999);
@@ -37,6 +31,17 @@ pub fn parse_state_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Resu
     let file_kw = file_kw.to_owned();
     let file = file.trim().to_owned();
     let parsed = StateSection { file_kw, file, start_line: section.start_line, end_line: section.end_line };
+    Ok(parsed)
+}
+
+pub fn parse_state_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+    if dpl.state.is_some() {
+        let mut diag = SpannedDiagnostic::new(
+            "cannot have multiple state sections".to_string(), section.start_line, 999);
+        diag.span.end.line = section.end_line;
+        return Err(diag);
+    }
+    let parsed = parse_state_section_as_value(section)?;
     dpl.state = Some(parsed);
     Ok(())
 }

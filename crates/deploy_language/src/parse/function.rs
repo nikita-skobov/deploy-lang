@@ -29,7 +29,7 @@ impl FunctionSection {
     }
 }
 
-pub fn parse_function_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+pub fn parse_function_section_as_value<'a>(section: &Section<'a>) -> Result<FunctionSection, SpannedDiagnostic> {
     let function_name_and_type = section.parameters
         .ok_or("function section must be followed by the function type and the function name")
         .map_err(|e| SpannedDiagnostic::from_str_at_line(section.typ, e))?;
@@ -50,6 +50,11 @@ pub fn parse_function_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
         body,
         end_line,
     };
+    Ok(function_section)
+}
+
+pub fn parse_function_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+    let function_section = parse_function_section_as_value(section)?;
     dpl.functions.push(function_section);
     Ok(())
 }

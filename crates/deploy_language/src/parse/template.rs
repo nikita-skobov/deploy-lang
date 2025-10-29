@@ -273,8 +273,8 @@ pub enum Directive {
     // SameDiff { kw: StringAtLine, same: Vec<jsonpath_rust::parser::model::JpQuery>, diff: Vec<jsonpath_rust::parser::model::JpQuery> },
 }
 
-pub fn parse_template_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
-    let template_name = section.parameters
+pub fn parse_template_section_as_value<'a>(section: &Section<'a>) -> Result<TemplateSection, SpannedDiagnostic> {
+let template_name = section.parameters
         .ok_or("must have a template name")
         .map_err(|e| {
             let diag = SpannedDiagnostic::new(e.to_string(), section.start_line, SECTION_TYPE.len());
@@ -308,8 +308,12 @@ pub fn parse_template_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> R
             return Err(diag);
         }
     }
-    dpl.templates.push(out);
+    Ok(out)
+}
 
+pub fn parse_template_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+    let out = parse_template_section_as_value(section)?;
+    dpl.templates.push(out);
     Ok(())
 }
 

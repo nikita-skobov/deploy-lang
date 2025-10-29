@@ -1,6 +1,6 @@
 //! crate for parsing a .dpl file
 
-use crate::parse::{constant::ConstSection, function::FunctionSection, resource::ResourceSection, state::StateSection, template::TemplateSection, SpannedDiagnostic};
+use crate::parse::{constant::ConstSection, function::FunctionSection, get_parsed_section, resource::ResourceSection, state::StateSection, template::TemplateSection, Section, SpannedDiagnostic};
 
 pub mod parse;
 pub mod validate;
@@ -14,6 +14,19 @@ pub struct DplFile {
     pub resources: Vec<ResourceSection>,
     pub functions: Vec<FunctionSection>,
     pub constants: Vec<ConstSection>,
+}
+
+pub enum SectionOrParsed<'a> {
+    Section(Section<'a>),
+    Parsed(ParsedSection)
+}
+
+pub enum ParsedSection {
+    Template(TemplateSection),
+    State(StateSection),
+    Resource(ResourceSection),
+    Function(FunctionSection),
+    Const(ConstSection),
 }
 
 pub fn parse_and_validate<S: AsRef<str>>(dpl_file_contents: S) -> Result<DplFile, Vec<SpannedDiagnostic>> {
@@ -39,4 +52,19 @@ pub fn parse_and_validate<S: AsRef<str>>(dpl_file_contents: S) -> Result<DplFile
         return Err(validations);
     }
     Ok(dpl)
+}
+
+pub fn get_sections_or_parsed<'a>(dpl_file_contents: &'a str) -> Vec<SectionOrParsed<'a>> {
+    let sections = parse::parse_document_to_sections(dpl_file_contents);
+    let mut out: Vec<SectionOrParsed> = vec![];
+    for section in sections {
+        if let Ok(section) = section {
+            if let Ok(parsed) = get_parsed_section(&section) {
+                out.push(SectionOrParsed::Parsed(parsed));
+            } else {
+                out.push(SectionOrParsed::Section(section));
+            }
+        }
+    }
+    out
 }

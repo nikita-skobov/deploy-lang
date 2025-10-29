@@ -22,7 +22,7 @@ pub mod constant;
 
 use str_at_line::{LineCounterIterator, SpannedStr, StrAtLine};
 
-use crate::DplFile;
+use crate::{DplFile, ParsedSection};
 
 
 pub const COMMENT_CHAR: char = '#';
@@ -130,6 +130,31 @@ pub fn consume_until_empty<'a, I>(
         lines.next();
     }
     None
+}
+
+pub fn get_parsed_section<'a>(
+    section: &Section<'a>,
+) -> Result<ParsedSection, SpannedDiagnostic> {
+    match section.typ.s {
+        state::SECTION_TYPE => {
+            Ok(ParsedSection::State(state::parse_state_section_as_value(&section)?))
+        },
+        resource::SECTION_TYPE => {
+            Ok(ParsedSection::Resource(resource::parse_resource_section_as_value(&section)?))
+        }
+        template::SECTION_TYPE => {
+            Ok(ParsedSection::Template(template::parse_template_section_as_value(&section)?))
+        }
+        function::SECTION_TYPE => {
+            Ok(ParsedSection::Function(function::parse_function_section_as_value(&section)?))
+        }
+        constant::SECTION_TYPE => {
+            Ok(ParsedSection::Const(constant::parse_const_section_value(&section)?))
+        }
+        _ => {
+            Err(SpannedDiagnostic::from_str_at_line(&section.typ, "unknown section type"))
+        }
+    }
 }
 
 pub fn sections_to_dpl_file_with_logger<'a>(

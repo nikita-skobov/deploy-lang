@@ -13,8 +13,7 @@ pub struct ConstSection {
     pub end_line: usize,
 }
 
-
-pub fn parse_const_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+pub fn parse_const_section_value<'a>(section: &Section<'a>) -> Result<ConstSection, SpannedDiagnostic> {
     let const_name = section.parameters
         .ok_or("const section must be followed by the const name")
         .map_err(|e| SpannedDiagnostic::from_str_at_line(section.typ, e))?;
@@ -54,7 +53,12 @@ pub fn parse_const_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Resu
     };
 
     let end_line = section.end_line;
-    dpl.constants.push(ConstSection { const_name, body, end_line });
+    Ok(ConstSection { const_name, body, end_line })
+}
+
+pub fn parse_const_section<'a>(dpl: &mut DplFile, section: &Section<'a>) -> Result<(), SpannedDiagnostic> {
+    let parsed = parse_const_section_value(section)?;
+    dpl.constants.push(parsed);
     Ok(())
 }
 
