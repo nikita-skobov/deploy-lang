@@ -3,7 +3,7 @@
 use enumdoc::Enumdoc;
 use str_at_line::{StrAtLine, StringAtLine};
 
-use crate::{parse::{self, state::StateSection, template::{Directive, TemplateSection, Transition}}, ParsedSection, SectionOrParsed};
+use crate::{parse::{self, state::StateSection, template::{Builtin, Directive, TemplateSection, Transition}}, ParsedSection, SectionOrParsed};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pos {
@@ -136,12 +136,13 @@ impl<'a> HoverInfo for &'a Directive {
             return Directive::variant_doc(kw.as_str()).map(|x| x.to_string())
         }
         // otherwise its hovering over some value after the directive keyword
+        // TODO: should offer hover info on these values?
         // match self {
-        //     Directive::Diff { kw, query_src, query } => todo!(),
-        //     Directive::Same { kw, query_src, query } => todo!(),
-        //     Directive::DropOutput { kw } => todo!(),
-        //     Directive::Accum { kw, src, accum, src_path, accum_path } => todo!(),
-        //     Directive::Insert { kw, src_path_src, dest_path_src, src_path, dest_path } => todo!(),
+        //     Directive::Diff { query_src, .. } => {}
+        //     Directive::Same { query_src, query, .. } => todo!(),
+        //     Directive::DropOutput { .. } => todo!(),
+        //     Directive::Accum { src, accum, src_path, accum_path, .. } => todo!(),
+        //     Directive::Insert { src_path_src, dest_path_src, src_path, dest_path, .. } => todo!(),
         // }
         None
     }
@@ -156,6 +157,24 @@ impl<'a> HoverInfo for &'a StateSection {
             return None
         }
         return Some(format!("the file where state is read/written from. if the file doesnt exist, it will be created."))
+    }
+}
+
+impl<'a> HoverInfo for &'a Builtin {
+    type Ctx = (&'a Transition, &'a TemplateSection, &'a WalkContext<'a>);
+
+    fn get_hover_info(&self, _ctx: &Self::Ctx, pos: Pos) -> Option<String> {
+        let kw = self.keyword();
+        if kw.in_range(pos) {
+            let kw_str = kw.as_str();
+            let kw_str = match kw_str.split_once("/") {
+                Some((_, r)) => r,
+                _ => kw_str,
+            };
+            return Builtin::variant_doc(kw_str).map(|x| x.to_string());
+        }
+        // TODO: give hints for the positional args after a builtin?
+        None
     }
 }
 
@@ -184,13 +203,18 @@ impl<'a> HoverInfo for &'a Transition {
                     return directive.get_hover_info(&(self, ctx.0, ctx.1), pos);
                 }
             }
-            // let (start_line, end_line) = command.cmd.start_end();
-            // if pos.line >= start_line && pos.line <= end_line {
-            //     match &command.cmd {
-            //         parse::template::CmdOrBuiltin::Command(cli_command) => todo!(),
-            //         parse::template::CmdOrBuiltin::Builtin(builtin) => todo!(),
-            //     };
-            // }
+            let (start_line, end_line) = command.cmd.start_end();
+            if pos.line >= start_line && pos.line <= end_line {
+                match &command.cmd {
+                    parse::template::CmdOrBuiltin::Command(_cli_command) => {
+                        // TODO: support command hovers, such as getting --help
+                        // for a specific command keyword
+                    }
+                    parse::template::CmdOrBuiltin::Builtin(builtin) => {
+                        return builtin.get_hover_info(&(self, ctx.0, ctx.1), pos);
+                    }
+                };
+            }
         }
         return None;
     }
@@ -383,6 +407,22 @@ template mee_templatee
         let hover_info = walk.get_hover_info(&walk, Pos { line: 3, col: 5 }).unwrap();
         assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
         let hover_info = walk.get_hover_info(&walk, Pos { line: 3, col: 15 }).unwrap();
+        assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
+    }
+
+    #[test]
+    fn can_get_hover_hint_for_transition_builtin() {
+        let doc = r#"
+template mee_templatee
+  create
+    /strcat []
+"#;
+        let sections = get_sections_or_parsed(doc);
+        let walk = WalkContext { sections };
+        let expected_substr = "- input: json array\n- output: string\n\nstrcat";
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 3, col: 6 }).unwrap();
+        assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
+        let hover_info = walk.get_hover_info(&walk, Pos { line: 3, col: 11 }).unwrap();
         assert_eq!(hover_info.get(0..expected_substr.len()).unwrap(), expected_substr);
     }
 

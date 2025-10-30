@@ -146,6 +146,12 @@ impl Builtin {
             Builtin::Random { kw, .. } => kw.line,
         }
     }
+    pub fn keyword(&self) -> &StringAtLine {
+        match self {
+            Builtin::Strcat { kw, .. } |
+            Builtin::Random { kw, .. } => kw,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
