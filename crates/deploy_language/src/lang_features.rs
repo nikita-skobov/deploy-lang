@@ -132,8 +132,19 @@ impl<'a> HoverInfo for &'a Directive {
     fn get_hover_info(&self, _ctx: &Self::Ctx, pos: Pos) -> Option<String> {
         // first check if its hover info for the directive itself:
         let kw = self.keyword();
-        if kw.in_range(pos) {
-            return Directive::variant_doc(kw.as_str()).map(|x| x.to_string())
+        // directive keyword doesnt include the @ but we want
+        // that to be part of the hover info if user hovers over the @
+        let kw_with_at = StringAtLine {
+            s: format!("@{}", kw.as_str()),
+            line: kw.line,
+            col: if kw.col == 0 {
+                kw.col
+            } else {
+                kw.col - 1
+            }
+        };
+        if kw_with_at.in_range(pos) {
+            return Directive::variant_doc(&kw.s).map(|x| x.to_string())
         }
         // otherwise its hovering over some value after the directive keyword
         // TODO: should offer hover info on these values?

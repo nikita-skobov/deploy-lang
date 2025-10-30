@@ -3,9 +3,7 @@ use std::error::Error;
 
 use deploy_language::get_sections_or_parsed;
 use deploy_language::lang_features::{HoverInfo, Pos, WalkContext};
-use deploy_language::parse::template::{Builtin, Directive};
 use deploy_language::parse::{Logger, Section, SpannedDiagnostic};
-use enumdoc::Enumdoc;
 use lsp_server::{Connection, Message, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::{CompletionItem, CompletionOptions, CompletionParams, CompletionTextEdit, DidOpenTextDocumentParams, Documentation, Hover, HoverContents, HoverParams, HoverProviderCapability, InsertReplaceEdit, MarkupContent, TextEdit, Url};
@@ -445,42 +443,7 @@ pub fn handle_hover_request<'a>(
             range: None
         })
     }
-    // for now we fall through to the old way of giving hover hints, but in the future we should just do the walk
-    // and return None if not found
-
-    // get the section that contains the hover pos
-    let section = doc.parsed.iter().find(|x| line_index >= x.start_line && line_index <= x.end_line)?;
-    match section.typ.s {
-        deploy_language::parse::template::SECTION_TYPE => {
-            let body_line = section.body.iter().find(|x| x.line == line_index)?;
-            let word = body_line.split_ascii_whitespace().into_iter().find(|x| {
-                let word_start = x.col;
-                if column < word_start {
-                    return false;
-                }
-                let word_end = word_start + x.s.chars().count();
-                column >= word_start && column <= word_end
-            })?;
-            let hover_value = if word.s.starts_with('@') {
-                let (_, directive_type) = word.s.split_once("@")?;
-                Directive::variant_doc(directive_type.trim())?.to_string()
-            } else if word.s.starts_with('/') {
-                let (_, builtin_type) = word.s.split_once("/")?;
-                Builtin::variant_doc(builtin_type.trim())?.to_string()
-            } else {
-                return None
-            };
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: lsp_types::MarkupKind::Markdown,
-                    value: hover_value,
-                }),
-                range: None,
-            });
-        }
-        // other section types not supported for now
-        _ => None,
-    }
+    None
 }
 
 #[derive(Clone, Debug)]
@@ -1063,12 +1026,12 @@ template ewqew
             parsed: sections,
         };
         // its before the @ so it shouldnt give anything
-        let params = hover_params_with_position(3, 3);
+        let params = hover_params_with_position(3, 4);
         let x = handle_hover_request(params, &parsed);
         assert!(x.is_none());
 
         // the @ character should give a hint
-        let params = hover_params_with_position(3, 4);
+        let params = hover_params_with_position(3, 5);
         let x = handle_hover_request(params, &parsed).unwrap();
         let markup = match x.contents {
             HoverContents::Markup(markup_content) => markup_content,
