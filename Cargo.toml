@@ -19,3 +19,4 @@ log = {  version = "0.4.28", features = ["std"] }
 tokio = { version = "1.46.1", features = ["full"]}
 fastrand = "2.3.0"
 enumdoc = { path = "./crates/enumdoc" }
+replays = { path = "./crates/replays" }
