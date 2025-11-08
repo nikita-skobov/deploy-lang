@@ -516,10 +516,15 @@ pub async fn perform_update_batch(
     let dep_map = &dependency_map;
     if batch.is_empty() { return Ok(()) }
 
+    // TODO: this should be a user config, optionally allowing
+    // to set no max parallel tasks. i think for safety this should
+    // default to a low-ish value. system resources can easily get exhausted
+    // even at this level depending on the tasks we are running
+    let max_parallel_tasks = 100;
     let mut task_set = tokio::task::JoinSet::new();
     // fire off async tasks for all trs that can be updated now, remove them from the list
     // so that they aren't processed multiple times
-    spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set)?;
+    spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set, max_parallel_tasks)?;
     if task_set.is_empty() {
         return Err(format!("error: unable to spawn any transitionable resource jobs"))
     }
@@ -543,7 +548,7 @@ pub async fn perform_update_batch(
         let resource_name = res.resource_name.clone();
         state.resources.insert(resource_name.clone(), res);
         // spawn everything thats now transitionable: the resource that just finished may have made it possible to spawn more
-        spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set)?;
+        spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set, max_parallel_tasks)?;
     }
     // if theres any remaining TRs in the batch, error out as the transition cannot be counted a success:
     if !batch.is_empty() {
@@ -624,14 +629,22 @@ pub fn retain_mut_err<T, E>(v: &mut Vec<T>, mut f: impl FnMut(&mut T) -> Result<
     Ok(())
 }
 
+/// if max_task_set_len is 0 => no limit on parallel tasks spawned
 pub fn spawn_all_currently_transitionable(
     logger: &'static dyn log::Log,
     state: &StateFile,
     list: &mut Vec<TrWithTemplate>,
     dep_map: &HashMap<String, Vec<String>>,
     task_set: &mut tokio::task::JoinSet<Result<ResourceInState, (String, String)>>,
+    max_task_set_len: usize,
 ) -> Result<(), String> {
     retain_mut_err::<_, String>(list, |tr| {
+        if task_set.len() >= max_task_set_len && max_task_set_len != 0 {
+            // reached the max number of spawned tasks
+            // can keep this in the list.
+            // the next time we spawn tasks, it will likely be spawned
+            return Ok(true)
+        }
         if can_tr_be_transitioned(tr, dep_map, &state) {
             let tr = std::mem::take(tr);
             // now that we know all of its dependencies are done
@@ -1353,7 +1366,7 @@ mod test {
         let dep_map = HashMap::new();
         let mut task_set = tokio::task::JoinSet::new();
         let logger = VecLogger::leaked();
-        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set).expect("it should not error");
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set, 1).expect("it should not error");
         assert!(task_set.is_empty());
         assert!(list.is_empty());
     }
@@ -1369,9 +1382,64 @@ mod test {
         state.resources.insert("b".to_string(), Default::default());
         let mut task_set = tokio::task::JoinSet::new();
         let logger = VecLogger::leaked();
-        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set).expect("it should not error");
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set, 1).expect("it should not error");
         assert_eq!(task_set.len(), 1);
         assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_all_currently_transitionable_can_set_limit() {
+        let state = StateFile::default();
+        let mut list = vec![
+            create_tr!("a"; r#"{"x": "x"}"#),
+            create_tr!("b"; r#"{"x": "x"}"#),
+            create_tr!("c"; r#"{"x": "x"}"#),
+        ];
+        let mut dep_map = HashMap::new();
+        dep_map.insert("a".to_string(), vec![]);
+        dep_map.insert("b".to_string(), vec![]);
+        dep_map.insert("c".to_string(), vec![]);
+        let mut task_set = tokio::task::JoinSet::new();
+        let logger = VecLogger::leaked();
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set, 2).expect("it should not error");
+        // theres 3 tasks to be spawned
+        // but we limit to 2. so only 2 should have been spawned
+        // and 1 remains in the list
+        assert_eq!(task_set.len(), 2);
+        assert_eq!(list.len(), 1);
+        // running it again, we dont spawn any tasks because the task set still has 2
+        // and the limit is 2:
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set, 2).expect("it should not error");
+        assert_eq!(task_set.len(), 2);
+        assert_eq!(list.len(), 1);
+        // we can remove from the task set, and now it allows it to spawn the last task:
+        let _ = task_set.join_next().await;
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set, 2).expect("it should not error");
+        // theres 2 because we were at 2, removed 1, then added 1
+        assert_eq!(task_set.len(), 2);
+        assert_eq!(list.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn spawn_all_currently_transitionable_can_use_0_limit_for_infinite_spawn() {
+        let state = StateFile::default();
+        let mut list = vec![
+            create_tr!("a"; r#"{"x": "x"}"#),
+            create_tr!("b"; r#"{"x": "x"}"#),
+            create_tr!("c"; r#"{"x": "x"}"#),
+        ];
+        let mut dep_map = HashMap::new();
+        dep_map.insert("a".to_string(), vec![]);
+        dep_map.insert("b".to_string(), vec![]);
+        dep_map.insert("c".to_string(), vec![]);
+        let mut task_set = tokio::task::JoinSet::new();
+        let logger = VecLogger::leaked();
+        spawn_all_currently_transitionable(logger, &state, &mut list, &dep_map, &mut task_set, 0).expect("it should not error");
+        // theres 3 tasks to be spawned
+        // but we limit to 0. which should be treated as infinite
+        // so it should spawn all 3 tasks:
+        assert_eq!(task_set.len(), 3);
+        assert_eq!(list.len(), 0);
     }
 
     #[tokio::test]
