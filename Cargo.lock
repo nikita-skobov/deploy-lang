@@ -93,6 +93,7 @@ dependencies = [
  "cli_engine",
  "deploy_language",
  "log",
+ "replays",
  "simple_logger",
  "tokio",
 ]
@@ -109,6 +110,7 @@ dependencies = [
  "json_with_positions",
  "jsonpath-rust",
  "log",
+ "replays",
  "serde",
  "serde_json",
  "str_at_line",

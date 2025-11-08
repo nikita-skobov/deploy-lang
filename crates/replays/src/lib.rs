@@ -180,6 +180,31 @@ pub fn add_replay_event(event: ReplayEvent) {
     grp.send_message(ReplayMsg::AddEvent(log));
 }
 
+pub fn resource_read<S: Into<String>>(resource_name: S, value: Value) {
+    let resource_name = resource_name.into();
+    add_replay_event(ReplayEvent::ResourceRead { resource_name, value });
+}
+
+pub fn resource_updated<S: Into<String>>(resource_name: S) {
+    let resource_name = resource_name.into();
+    add_replay_event(ReplayEvent::TrChange { resource_name, change_type: TrChangeType::Update });
+}
+
+pub fn resource_created<S: Into<String>>(resource_name: S) {
+    let resource_name = resource_name.into();
+    add_replay_event(ReplayEvent::TrChange { resource_name, change_type: TrChangeType::Create });
+}
+
+pub fn resource_deleted<S: Into<String>>(resource_name: S) {
+    let resource_name = resource_name.into();
+    add_replay_event(ReplayEvent::TrChange { resource_name, change_type: TrChangeType::Delete });
+}
+
+pub fn resource_unmodified<S: Into<String>>(resource_name: S) {
+    let resource_name = resource_name.into();
+    add_replay_event(ReplayEvent::TrChange { resource_name, change_type: TrChangeType::Unmodified });
+}
+
 pub fn start_replay_log() {
     let grp = &*GLOBAL_REPLAY;
     grp.send_message(ReplayMsg::StartReplayLog);

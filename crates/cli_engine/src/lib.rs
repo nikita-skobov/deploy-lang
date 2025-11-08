@@ -204,12 +204,14 @@ pub fn get_transitionable_resources(
                 match resource_input_has_been_changed(&resource, &state_entry) {
                     Some(true) => {
                         // its input has changed since last deploy, it needs to be updated
+                        replays::resource_updated(&resource.resource_name.s);
                         out.push(TransitionableResource::Update { state_entry, current_entry: resource })
                     },
                     Some(false) => {
                         // its input has not changed, dont add it to the
                         // list of transitionable resources. instead, treat it as
                         // done so other resources can read its output
+                        replays::resource_unmodified(&resource.resource_name.s);
                         done_resources.insert(state_entry.resource_name.clone(), state_entry);
                     },
                     None => {
@@ -223,6 +225,7 @@ pub fn get_transitionable_resources(
             }
             None => {
                 // this resource is to be created since there's no corresponding state entry
+                replays::resource_created(&resource.resource_name.s);
                 out.push(TransitionableResource::Create { current_entry: resource });
             }
         }
@@ -238,6 +241,7 @@ pub fn get_transitionable_resources(
                 // later, once its dependencies finish, we will try to resolve the input again
                 // where it might succeed, or if it fails then we'll error. but for now we cannot know
                 // if this is done yet or not
+                replays::resource_updated(&current_entry.resource_name.s);
                 out.push(TransitionableResource::Update { state_entry, current_entry });
                 continue;
             }
@@ -245,14 +249,17 @@ pub fn get_transitionable_resources(
         // we were able to get its current input, now check if it differs from the last time it was deployed
         // if not, we can treat this as already done
         if resolved_input == state_entry.last_input {
+            replays::resource_unmodified(&current_entry.resource_name.s);
             done_resources.insert(current_entry.resource_name.s, state_entry);
         } else {
+            replays::resource_updated(&current_entry.resource_name.s);
             out.push(TransitionableResource::Update { state_entry, current_entry });
         }
     }
     // now, check all of the resources in the state file that do not have corresponding
     // entry in the current dpl file, these resources are to be deleted:
     for (_, state_entry) in state.resources.drain() {
+        replays::resource_deleted(&state_entry.resource_name);
         out.push(TransitionableResource::Delete { state_entry })
     }
     // afterwards, put back all of the resources that had no-op updates into the state
