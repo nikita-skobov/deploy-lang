@@ -30,8 +30,8 @@ pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) ->
 
 /// returns a list of dependencies that are immediate: this current resource depends on resource A, B, C, ...
 /// dependencies are other resource names from json paths that are referenced by this current resource in its input json
-pub fn get_immediate_dependencies(current: &TrWithTemplate) -> Result<Vec<String>, String> {
-    let mut immediate_deps = match &current.tr {
+pub fn get_immediate_dependencies(current: &TransitionableResource) -> Result<Vec<String>, String> {
+    let mut immediate_deps = match &current {
         TransitionableResource::Create { current_entry } |
         TransitionableResource::Update { current_entry, .. } => {
             get_immediate_deps_from_current_entry(current_entry)?
@@ -49,7 +49,7 @@ pub fn get_all_transient_dependencies_map(
     // first, collect a map of all immediate dependencies:
     let mut immediate_dep_map = HashMap::with_capacity(trs.len());
     for tr in trs {
-        let immediate_deps = get_immediate_dependencies(tr)?;
+        let immediate_deps = get_immediate_dependencies(&tr.tr)?;
         immediate_dep_map.insert(tr.tr.get_resource_name().to_string(), immediate_deps);
     }
     // ensure to also add all of the done resources, otherwise some lookups will fail
@@ -79,7 +79,7 @@ pub fn get_delete_order_map(trs: &[TrWithTemplate]) -> Result<HashMap<String, Ve
     let delete_resources_set: HashSet<_> = trs.iter().map(|tr| tr.tr.get_resource_name()).collect();
     let mut out = HashMap::with_capacity(trs.len());
     for tr in trs {
-        let mut immediate_deps = get_immediate_dependencies(tr)?;
+        let mut immediate_deps = get_immediate_dependencies(&tr.tr)?;
         // for the immediate deps of this resource, remove any that are not in
         // the batch of resources to be deleted:
         immediate_deps.retain(|d| delete_resources_set.contains(d.as_str()));
@@ -195,7 +195,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
@@ -218,7 +218,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
@@ -240,7 +240,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let err = get_immediate_dependencies(&current).expect_err("it should error");
+        let err = get_immediate_dependencies(&current.tr).expect_err("it should error");
         assert_eq!(err, "json path for resource 'a' must start with a segment selector that references another resource. instead found '0'");
         
         let current = TrWithTemplate {
@@ -256,7 +256,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let err = get_immediate_dependencies(&current).expect_err("it should error");
+        let err = get_immediate_dependencies(&current.tr).expect_err("it should error");
         assert_eq!(err, "json path for resource 'a' must start with a segment selector that references another resource. instead found '..output'");
     }
 
@@ -283,7 +283,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
@@ -302,7 +302,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
