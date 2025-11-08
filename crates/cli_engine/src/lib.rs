@@ -506,6 +506,29 @@ pub async fn perform_update(
     Ok(state)
 }
 
+pub async fn process_join_set<T: 'static, X: 'static, E>(
+    join_set: &mut tokio::task::JoinSet<T>,
+    pass_data: &mut X,
+    process_fn: &mut impl FnMut(Result<T, tokio::task::JoinError>, &mut X) -> Result<(), E>,
+    fill_fn: &mut impl FnMut(&mut tokio::task::JoinSet<T>, &mut X) -> Result<(), E>,
+) -> Result<(), E> {
+    loop {
+        if let Some(t) = join_set.join_next().await {
+            process_fn(t, pass_data)?;
+        } else {
+            break;
+        }
+        // keep trying to process items that are already available, without
+        // yielding back to the async runtime
+        while let Some(t) = join_set.try_join_next() {
+            process_fn(t, pass_data)?;
+        }
+        // now, try to insert up to removed items into the join set:
+        fill_fn(join_set, pass_data)?;
+    }
+    Ok(())
+}
+
 pub async fn perform_update_batch(
     logger: &'static dyn log::Log,
     state: &mut StateFile,
@@ -528,28 +551,38 @@ pub async fn perform_update_batch(
     if task_set.is_empty() {
         return Err(format!("error: unable to spawn any transitionable resource jobs"))
     }
-    while let Some(next) = task_set.join_next().await {
-        let res = next.map_err(|e| format!("deployment task panicked: {:?}", e))?;
-        // TODO: should 1 resource failure stop all other resources? for now it will...
-        let res = res.map_err(|(resource_name, e)| {
-            if !resource_name.starts_with(FUNCTION_RESOURCE_PREFIX) {
-                log::error!(logger: logger, "resource '{}' failed to transition. error: {}", resource_name, e);
+
+    process_join_set::<_, _, String>(
+        &mut task_set,
+        state,
+        &mut |next, state| {
+            let res = next.map_err(|e| format!("deployment task panicked: {:?}", e))?;
+            // TODO: should 1 resource failure stop all other resources? for now it will...
+            let res = res.map_err(|(resource_name, e)| {
+                if !resource_name.starts_with(FUNCTION_RESOURCE_PREFIX) {
+                    log::error!(logger: logger, "resource '{}' failed to transition. error: {}", resource_name, e);
+                }
+                e
+            })?;
+            if res.template_name != FUNCTION_RESOURCE_PREFIX {
+                log::info!(logger: logger, "resource '{}' OK", res.resource_name);
+            } else {
+                let (fn_name, resource_name) = extract_fn_call_names(&res.resource_name).unwrap_or_default();
+                log::info!(logger: logger, "function call '{}({})' OK", fn_name, resource_name);
             }
-            e
-        })?;
-        if res.template_name != FUNCTION_RESOURCE_PREFIX {
-            log::info!(logger: logger, "resource '{}' OK", res.resource_name);
-        } else {
-            let (fn_name, resource_name) = extract_fn_call_names(&res.resource_name).unwrap_or_default();
-            log::info!(logger: logger, "function call '{}({})' OK", fn_name, resource_name);
+            // add this to the state, then look up all the resources that depend on this resource and try to
+            // spawn tasks for any other resource that can be transitioned now
+            let resource_name = res.resource_name.clone();
+            state.resources.insert(resource_name.clone(), res);
+            Ok(())
+        },
+        &mut |tasks, state| {
+            // spawn everything thats now transitionable: the resource that just finished may have made it possible to spawn more
+            spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, tasks, max_parallel_tasks)?;
+            Ok(())
         }
-        // add this to the state, then look up all the resources that depend on this resource and try to
-        // spawn tasks for any other resource that can be transitioned now
-        let resource_name = res.resource_name.clone();
-        state.resources.insert(resource_name.clone(), res);
-        // spawn everything thats now transitionable: the resource that just finished may have made it possible to spawn more
-        spawn_all_currently_transitionable(logger, &state, &mut batch, dep_map, &mut task_set, max_parallel_tasks)?;
-    }
+    ).await?;
+
     // if theres any remaining TRs in the batch, error out as the transition cannot be counted a success:
     if !batch.is_empty() {
         return Err(format!("{} resources were not transitioned: {:?}", batch.len(), batch.iter().map(|x| x.tr.get_resource_name()).collect::<Vec<_>>()))
