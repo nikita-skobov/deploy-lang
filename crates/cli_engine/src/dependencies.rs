@@ -7,6 +7,22 @@ use deploy_language::{parse::{resource::ResourceSection}};
 use crate::{get_resource_name_from_segment, ResourceInState, StateFile, TrWithTemplate, TransitionableResource};
 
 
+pub trait TrAccess {
+    fn get_tr(&self) -> &TransitionableResource;
+}
+
+impl TrAccess for TransitionableResource {
+    fn get_tr(&self) -> &TransitionableResource {
+        self
+    }
+}
+
+impl TrAccess for TrWithTemplate {
+    fn get_tr(&self) -> &TransitionableResource {
+        &self.tr
+    }
+}
+
 pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) -> Result<Vec<String>, String> {
     // TODO: parse and extract just the first segment
     let all_json_paths = current_entry.input.get_all_json_paths();
@@ -42,15 +58,16 @@ pub fn get_immediate_dependencies(current: &TransitionableResource) -> Result<Ve
     Ok(immediate_deps)
 }
 
-pub fn get_all_transient_dependencies_map(
-    trs: &[TrWithTemplate],
+pub fn get_all_transient_dependencies_map<T: TrAccess>(
+    trs: &[T],
     done_resources: &HashMap<String, ResourceInState>,
 ) -> Result<HashMap<String, Vec<String>>, String> {
     // first, collect a map of all immediate dependencies:
     let mut immediate_dep_map = HashMap::with_capacity(trs.len());
     for tr in trs {
-        let immediate_deps = get_immediate_dependencies(&tr.tr)?;
-        immediate_dep_map.insert(tr.tr.get_resource_name().to_string(), immediate_deps);
+        let tr = tr.get_tr();
+        let immediate_deps = get_immediate_dependencies(tr)?;
+        immediate_dep_map.insert(tr.get_resource_name().to_string(), immediate_deps);
     }
     // ensure to also add all of the done resources, otherwise some lookups will fail
     // where a tr depends on a resource thats already done
