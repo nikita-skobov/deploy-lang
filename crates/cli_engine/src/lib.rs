@@ -18,6 +18,13 @@ pub mod const_eval;
 /// for that function call, and it will have this prefix such that we dont accidentally
 /// add it to state afterwards, and such that users cant have conflicting resource names
 pub const FUNCTION_RESOURCE_PREFIX: &str = "__priv_internal_function_resource__";
+// we create ephemeral resources for function calls, and the names look like
+// __priv_internal_function_resource__…–…{fn_name}…–…{resource_name}
+// the separator is used to extract the  fn name and resource name
+// it's chosen to be in the UTF8 range of between U+0080 and U+D7FF
+// as those are valid json path characters https://www.rfc-editor.org/rfc/rfc9535#name-child-segment
+// whereas common characters such as '|' are not
+pub const FUNCTION_RESOURCE_NAME_SEP: &str = "…–…";
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct StateFile {
@@ -312,7 +319,12 @@ pub fn insert_function_resources(
                     input: fake_input,
                     end_line: 0,
                 };
-                fake_resource.resource_name.s = format!("{}_{}_{}", FUNCTION_RESOURCE_PREFIX, func.function_name.as_str(), resource_arg);
+                fake_resource.resource_name.s = format!("{}{}{}{}{}",
+                    FUNCTION_RESOURCE_PREFIX,
+                    FUNCTION_RESOURCE_NAME_SEP,
+                    func.function_name.as_str(),
+                    FUNCTION_RESOURCE_NAME_SEP,
+                    resource_arg);
                 fake_resource.template_name.s = FUNCTION_RESOURCE_PREFIX.to_string();
                 // replace the json path reference with a reference instead to the fake resource
                 // which will resolve to the value of the function output
@@ -609,8 +621,8 @@ pub async fn perform_update_batch(
 }
 
 pub fn extract_fn_call_names(resource_name: &str) -> Option<(&str, &str)> {
-    let (remaining, resource_name) = resource_name.rsplit_once("_")?;
-    let (_, function_name) = remaining.rsplit_once("_")?;
+    let (remaining, resource_name) = resource_name.rsplit_once(FUNCTION_RESOURCE_NAME_SEP)?;
+    let (_, function_name) = remaining.rsplit_once(FUNCTION_RESOURCE_NAME_SEP)?;
     return Some((function_name, resource_name));
 }
 
@@ -2593,6 +2605,36 @@ resource aws_s3_bucket(my_s3_bucket)
         assert!(state.resources.contains_key("my_s3_bucket"));
         assert_eq!(logger.get_logs(), vec!["updating 'my_policy'", "resource 'my_policy' OK"]);
     }
+
+    #[tokio::test]
+    async fn can_use_fn_calls_with_resources_with_underscores() {
+        let document = r#"
+template some_template
+  create
+    echo hi
+
+function javascript(my_func)
+  return "eee"
+
+resource some_template(fo_o)
+  {
+    "foo": "foo"
+  }
+
+resource some_template(bar)
+  {
+    "bar": $.my_func['fo_o']
+  }
+"#;
+        let state = StateFile::default();
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        // we run deploy once on an empty state and it works fine
+        let _ = perform_update(logger, dpl, state).await.expect("deploy should work");
+        assert_eq!(logger.get_logs(), vec!["creating 'fo_o'", "resource 'fo_o' OK", "calling function 'my_func(fo_o)'", "function call 'my_func(fo_o)' OK", "creating 'bar'", "resource 'bar' OK"]);
+    }
+
 
     #[test]
     fn no_fake_resources_if_no_function_calls() {
