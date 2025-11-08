@@ -497,6 +497,107 @@ pub fn verify_transitions(
     Ok(())
 }
 
+pub fn get_function_call_payload(
+    fn_name: &str,
+    done_resource: &ResourceInState,
+    fn_call_resource: &TransitionableResource,
+) -> Option<run_function::FunctionCall> {
+    let resource_section = if let TransitionableResource::Create { current_entry } = fn_call_resource {
+        current_entry
+    } else { return None };
+    let body = &resource_section.input["function_body"];
+    let function_body = if let json_with_positions::Value::String { val, .. } = body {
+        val.s.clone()
+    } else {
+        return None
+    };
+
+    Some(run_function::FunctionCall {
+        function_name: fn_name.to_string(),
+        // TODO: when we support different types will need to pass this in
+        // currently can just assume its javascript
+        function_type: "javascript".to_string(),
+        function_body,
+        depends_on: run_function::Resource {
+            name: done_resource.resource_name.clone(),
+            input: done_resource.last_input.clone(),
+            output: done_resource.output.clone()
+        }
+    })
+}
+
+/// run every function call that depends on a resource thats already done
+pub async fn run_all_done_function_calls(
+    logger: &'static dyn log::Log,
+    transitionable_resources: &mut Vec<TransitionableResource>,
+    done_resources: &mut HashMap<String, ResourceInState>,
+) {
+    let fn_call_resources: Vec<_> = transitionable_resources.extract_if(.., |resource| {
+        resource.get_resource_name().starts_with(FUNCTION_RESOURCE_PREFIX)
+    }).collect();
+    for fn_call_resource in fn_call_resources {
+        let fn_call_resource_name = fn_call_resource.get_resource_name().to_string();
+        if let Some((fn_name, resource_name)) = extract_fn_call_names(fn_call_resource.get_resource_name()) {
+            // if the resource that this function will be called with
+            // is already done, call it:
+            if let Some(done_resource) = done_resources.get(resource_name) {
+                let payload = if let Some(p) = get_function_call_payload(fn_name, done_resource, &fn_call_resource) {
+                    p
+                } else {
+                    // add it back to transitionable resources. it will be ran later
+                    transitionable_resources.push(fn_call_resource);
+                    continue;
+                };
+                let function_output = match run_function::run_function_ex(logger, resource_name, payload).await {
+                    Ok(o) => o,
+                    Err(_) => {
+                        // we'll ignore this for now
+                        // the function will be ran later and can error then
+                        transitionable_resources.push(fn_call_resource);
+                        continue;
+                    }
+                };
+                done_resources.insert(fn_call_resource_name.clone(), ResourceInState {
+                    resource_name: fn_call_resource_name,
+                    template_name: FUNCTION_RESOURCE_PREFIX.to_string(),
+                    // ephemeral function call's inputs are never read
+                    last_input: serde_json::Value::Null,
+                    output: function_output,
+                    depends_on: vec![resource_name.to_string()],
+                });
+            } else {
+                // add it back to transitionable resources. it will be ran later
+                transitionable_resources.push(fn_call_resource);
+            }
+        } else {
+            // add it back to transitionable resources. it will be ran later
+            transitionable_resources.push(fn_call_resource);
+        }
+    }
+}
+
+pub async fn handle_done_resource_function_calls(
+    logger: &'static dyn log::Log,
+    transitionable_resources: &mut Vec<TransitionableResource>,
+    done_resources: &mut HashMap<String, ResourceInState>,
+    potentially_done_errs: Vec<String>,
+) {
+    // run all function call resources for resources that are already done
+    run_all_done_function_calls(logger, transitionable_resources, done_resources).await;
+    // for every potentially done resource, try to evaluate it
+    // now that the function calls finished of done resources
+    let potentially_done_resources: Vec<_> = transitionable_resources.extract_if(.., |resource| {
+        potentially_done_errs.iter().any(|name| name == resource.get_resource_name())
+    }).collect();
+    let mut ignored_errors = vec![];
+    dependencies::evaluate_deps_of_potentially_done_updates(
+        potentially_done_resources,
+        done_resources,
+        transitionable_resources,
+        &mut ignored_errors
+    );
+}
+
 pub async fn perform_update(
     logger: &'static dyn log::Log,
     mut dpl: DplFile,
@@ -506,9 +607,12 @@ pub async fn perform_update(
     evaluate_constants(logger, &mut dpl).await?;
     // next, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
-    let (mut transitionable_resources, _potentially_done_errs) = get_transitionable_resources(&mut state, &mut dpl);
+    let (mut transitionable_resources, potentially_done_errs) = get_transitionable_resources(&mut state, &mut dpl);
     // add fake resources that will correspond to the output of function calls:
     insert_function_resources(&dpl, &state,&mut transitionable_resources)?;
+    // run all functions that can be ran now, and some resources
+    // that depended on those function calls may be marked done
+    handle_done_resource_function_calls(logger, &mut transitionable_resources, &mut state.resources, potentially_done_errs).await;
     // next, ensure every resource can be matched with a template. error otherwise:
     let mut transitionable_resources = match_resources_with_template(transitionable_resources, &dpl)?;
     // ensure every resource to be transitioned *can* be transitioned before starting any tasks:
@@ -2539,6 +2643,104 @@ resource some_template(B)
         let resource_b_tr = trs.remove(0);
         assert_eq!(resource_b_tr.get_resource_name(), "B");
         assert_eq!(resource_b_tr.is_update(), true);
+    }
+
+    #[tokio::test]
+    async fn fn_calls_of_done_resources_can_be_evaluated() {
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+function javascript(myfunc)
+  return "hello"
+
+resource some_template(C)
+    {"x": $.myfunc['B']}
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"x": $.A.output}
+"#;
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let mut state = StateFile::default();
+        // A, B, and C were already in state:
+        for resource_name in ["A", "B", "C"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            resource.output = serde_json::json!("hello");
+            if resource_name == "B" || resource_name == "C" {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            } else {
+                resource.last_input = serde_json::json!({});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        // this should succeed despite
+        // some_template not defining update commands
+        // the reason is resource C depends on B which is already done, but C
+        // needs to call a function to evaluate if its input is done or not
+        // and the function returns the same as the last_input, so C should simply
+        // be marked done
+        let state = perform_update(logger, dpl, state).await.expect("initial deploy should work");
+        assert!(state.resources.contains_key("A"));
+        assert!(state.resources.contains_key("B"));
+        assert!(state.resources.contains_key("C"));
+        let logs = logger.get_logs();
+        // the only log is that we called the function
+        // which implies we did not update/create any resource A B nor C
+        assert_eq!(logs, vec!["calling function 'myfunc(B)'"]);
+    }
+
+    #[tokio::test]
+    async fn fn_calls_of_done_resources_can_be_evaluated_and_determine_update_is_needed() {
+        // same as above test, but this time the function returns a different value
+        // than the state's last input, which means we need to update C
+        // and C doesnt have an update section in its referenced template
+        // therefore it should fail
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+function javascript(myfunc)
+  return "different"
+
+resource some_template(C)
+    {"x": $.myfunc['B']}
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"x": $.A.output}
+"#;
+        let dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let mut state = StateFile::default();
+        // A, B, and C were already in state:
+        for resource_name in ["A", "B", "C"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            resource.output = serde_json::json!("hello");
+            if resource_name == "B" || resource_name == "C" {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            } else {
+                resource.last_input = serde_json::json!({});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        let logger = VecLogger::leaked();
+        log::set_max_level(log::LevelFilter::Trace);
+        let err = perform_update(logger, dpl, state).await.expect_err("it should fail to deploy");
+        assert!(err.contains("resource 'C' is to be updated but template 'some_template' does not define any update commands"), "{}", err);
     }
 
     #[tokio::test]
