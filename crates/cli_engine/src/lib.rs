@@ -219,7 +219,7 @@ pub fn get_transitionable_resources(
                         // we temporarily add it to "potentially_done_updates" and later
                         // check all of its references to see if they are done, and we can then update this value to check if
                         // its trully a transitionable update, or perhaps its already done
-                        potentially_done_updates.push((state_entry, resource));
+                        potentially_done_updates.push(TransitionableResource::Update { state_entry, current_entry: resource });
                     },
                 }
             }
@@ -232,30 +232,7 @@ pub fn get_transitionable_resources(
     }
     // check all of the potentially done updates and for any update that has all of its dependencies already done
     // we can remove it from transitionable updates and mark it as done now
-    for (state_entry, current_entry) in potentially_done_updates {
-        let resolved_input = match resolve_current_input_value(&current_entry.input, current_entry.resource_name.as_str(), &done_resources) {
-            Ok(v) => v,
-            Err(_) => {
-                // if we for some reason fail to lookup the immediate deps
-                // or its not done yet, we can simply treat this as an updateable resource.
-                // later, once its dependencies finish, we will try to resolve the input again
-                // where it might succeed, or if it fails then we'll error. but for now we cannot know
-                // if this is done yet or not
-                replays::resource_updated(&current_entry.resource_name.s);
-                out.push(TransitionableResource::Update { state_entry, current_entry });
-                continue;
-            }
-        };
-        // we were able to get its current input, now check if it differs from the last time it was deployed
-        // if not, we can treat this as already done
-        if resolved_input == state_entry.last_input {
-            replays::resource_unmodified(&current_entry.resource_name.s);
-            done_resources.insert(current_entry.resource_name.s, state_entry);
-        } else {
-            replays::resource_updated(&current_entry.resource_name.s);
-            out.push(TransitionableResource::Update { state_entry, current_entry });
-        }
-    }
+    dependencies::evaluate_deps_of_potentially_done_updates(potentially_done_updates, &mut done_resources, &mut out);
     // now, check all of the resources in the state file that do not have corresponding
     // entry in the current dpl file, these resources are to be deleted:
     for (_, state_entry) in state.resources.drain() {
@@ -2326,12 +2303,130 @@ resource some_template(B)
         // its value is the same
         let trs = get_transitionable_resources(&mut state, &mut dpl);
         assert!(trs.is_empty());
+        // A and B were marked done
+        assert!(state.resources.contains_key("A"));
+        assert!(state.resources.contains_key("B"));
+    }
+
+    #[test]
+    fn get_transitionable_resources_can_check_for_already_done_updates_nested() {
+        // same situation as above test, but now there's a third resource
+        // C that depends on B, and also shouldnt be transitionable
+        // the order shouldnt matter, but at the time of writing the test case
+        // it does: C happens first, and this fails due to the order
+        // we want nested depdendencies to be able to resolve that its already done
+        // ahead of time
+
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+resource some_template(C)
+    {"x": $.B.output}
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"x": $.A.output}
+"#;
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let mut state = StateFile::default();
+        // A, B, and C were already in state:
+        for resource_name in ["A", "B", "C"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            resource.output = serde_json::json!("hello");
+            if resource_name == "B" || resource_name == "C" {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            } else {
+                resource.last_input = serde_json::json!({});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        // should be empty because resource B depends on A, but A doesnt need to be updated, and therefore
+        // its value is the same
+        let trs = get_transitionable_resources(&mut state, &mut dpl);
+        assert!(trs.is_empty());
+        // A B and C should be marked done
+        assert!(state.resources.contains_key("A"));
+        assert!(state.resources.contains_key("B"));
+        assert!(state.resources.contains_key("C"));
+    }
+
+    #[test]
+    fn get_transitionable_resources_can_check_for_already_done_updates_nested_deeply() {
+        // same situation as above test, but there's a deep level of nesting
+        // where we'd need to evaluate one resource's input, before checking its dependencies
+        // and so on
+
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+resource some_template(H)
+    {"x": $.G.output}
+
+resource some_template(G)
+    {"x": $.F.output}
+
+resource some_template(F)
+    {"x": $.E.output}
+
+resource some_template(E)
+    {"x": $.D.output}
+
+resource some_template(D)
+    {"x": $.C.output}
+
+resource some_template(C)
+    {"x": $.B.output}
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"x": $.A.output}
+"#;
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let mut state = StateFile::default();
+        // all resources were already in state:
+        for resource_name in ["A", "B", "C", "D", "E", "F", "G", "H"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            resource.output = serde_json::json!("hello");
+            if resource_name == "A" {
+                resource.last_input = serde_json::json!({});
+            } else {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        // should be empty because no resource needs to be updated:
+        // we were able to evaluate its current input and determining its equal to the last input
+        let trs = get_transitionable_resources(&mut state, &mut dpl);
+        assert!(trs.is_empty());
+        // they should be marked done
+        assert!(state.resources.contains_key("A"));
+        assert!(state.resources.contains_key("B"));
+        assert!(state.resources.contains_key("C"));
+        assert!(state.resources.contains_key("D"));
+        assert!(state.resources.contains_key("E"));
+        assert!(state.resources.contains_key("F"));
+        assert!(state.resources.contains_key("G"));
+        assert!(state.resources.contains_key("H"));
     }
 
     #[test]
     fn get_transitionable_resources_can_check_for_already_done_updates_and_still_cause_update() {
-        // same situation as above test, but the input actually does differ
-        // and thus we should consider B an update
+        // same situation as get_transitionable_resources_can_check_for_already_done_updates,
+        // but the input actually does differ and thus we should consider B an update
 
         let document = r#"
 template some_template

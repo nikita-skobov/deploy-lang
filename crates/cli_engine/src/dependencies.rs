@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use deploy_language::{parse::{resource::ResourceSection}};
 
-use crate::{get_resource_name_from_segment, ResourceInState, StateFile, TrWithTemplate, TransitionableResource};
+use crate::{get_resource_name_from_segment, resolve_current_input_value, ResourceInState, StateFile, TrWithTemplate, TransitionableResource};
 
 
 pub trait TrAccess {
@@ -197,6 +197,113 @@ pub fn can_tr_be_transitioned(tr: &TrWithTemplate, dep_map: &HashMap<String, Vec
     let no_deps = vec![];
     let dep_list = dep_map.get(tr.tr.get_resource_name()).unwrap_or(&no_deps);
     dep_list.iter().all(|dep| state.resources.contains_key(dep))
+}
+
+/// check all the dependencies of the potentially done update resources
+/// if all of their dependencies are already done, it can be marked already done
+/// otherwise add it to the transitionable resources
+pub fn evaluate_deps_of_potentially_done_updates(
+    potentially_done: Vec<TransitionableResource>,
+    done_resources: &mut HashMap<String, ResourceInState>,
+    transitionable_resources: &mut Vec<TransitionableResource>,
+) {
+    static EMPTY_STRING_VEC: Vec<String> = Vec::new();
+    if potentially_done.is_empty() {
+        return
+    }
+    let deps = if let Ok(deps) = get_all_transient_dependencies_map(&potentially_done, done_resources) {
+        deps
+    } else {
+        // we failed to calculate dependencies, in this case simply
+        // return all potentially done resources as updates
+        transitionable_resources.extend(potentially_done);
+        return;
+    };
+    // we need a map that says "this resource is depended on by N other resources"
+    let inverse_deps = {
+        let mut inverse: HashMap<String, Vec<String>> = HashMap::with_capacity(deps.len());
+        for (resource_name, its_dependencies) in deps.iter() {
+            for dep_name in its_dependencies {
+                if let Some(existing) = inverse.get_mut(dep_name) {
+                    existing.push(resource_name.clone());
+                    existing.sort();
+                    existing.dedup();
+                } else {
+                    inverse.insert(dep_name.clone(), vec![resource_name.clone()]);
+                }
+            }
+        }
+        inverse
+    };
+    // initialize frontier with all resources that are potentially done
+    // and that have all their dependencies done:
+    let mut frontier = vec![];
+    let mut remaining = vec![];
+    for tr in potentially_done {
+        let resource_name = tr.get_resource_name();
+        if let Some(deps) = deps.get(resource_name) {
+            if deps.iter().all(|dep| done_resources.contains_key(dep)) {
+                frontier.push(tr);
+            } else {
+                // its dependencies arent done yet
+                // so add to remaining
+                remaining.push(tr);
+            }
+        } else {
+            // this shouldnt happen but if it does, we can just add it to remaining
+            remaining.push(tr);
+        }
+    }
+    // keep checking frontier for resources that can be evaluated
+    // check their evaluated json against their prior json
+    // and if its the same, it can be added to done, otherwise its added as an update
+    while let Some(tr) = frontier.pop() {
+        let (state_entry, current_entry) = match tr {
+            TransitionableResource::Update { state_entry, current_entry } => (state_entry, current_entry),
+            x => {
+                // we should only be processing updates, so if its not an update
+                // just add it to the transitionable resources
+                transitionable_resources.push(x);
+                continue;
+            }
+        };
+        let resolved_input = match resolve_current_input_value(&current_entry.input, current_entry.resource_name.as_str(), &done_resources) {
+            Ok(o) => o,
+            Err(_) => {
+                // we could not resolve the input value (could be a function call for example)
+                // so simply add it to the transitionable resources, and we'll update it and resolve it later
+                transitionable_resources.push(TransitionableResource::Update { state_entry, current_entry });
+                continue;
+            }
+        };
+        if resolved_input == state_entry.last_input {
+            // this resource hasnt changed since the last time
+            // we can add it to done resources
+            let resource_name = current_entry.resource_name.s;
+            done_resources.insert(resource_name.clone(), state_entry);
+            // and we also need to iterate over anything that depended on this resource
+            // and add it to the frontier
+            let dependents = inverse_deps.get(&resource_name).unwrap_or(&EMPTY_STRING_VEC);
+            for dep in dependents {
+                let dep_dependencies = deps.get(dep).unwrap_or(&EMPTY_STRING_VEC);
+                if dep_dependencies.iter().all(|d| done_resources.contains_key(d)) {
+                    // all of this dep's dependencies are done it can be added to the frontier:
+                    let index = remaining.iter().position(|p| p.get_resource_name() == dep);
+                    if let Some(i) = index {
+                        // safety: we know it exists since we used position from the iterator
+                        let tr = remaining.remove(i);
+                        frontier.push(tr);
+                    }
+                }
+            }
+        } else {
+            // this resource has changed, it needs to be updated
+            transitionable_resources.push(TransitionableResource::Update { state_entry, current_entry });
+        }
+    }
+    // at the end, add any remaining trs to the output tr list
+    // these will be updated later
+    transitionable_resources.extend(remaining);
 }
 
 #[cfg(test)]
