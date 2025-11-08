@@ -206,6 +206,7 @@ pub fn evaluate_deps_of_potentially_done_updates(
     potentially_done: Vec<TransitionableResource>,
     done_resources: &mut HashMap<String, ResourceInState>,
     transitionable_resources: &mut Vec<TransitionableResource>,
+    resources_that_errored: &mut Vec<String>,
 ) {
     static EMPTY_STRING_VEC: Vec<String> = Vec::new();
     if potentially_done.is_empty() {
@@ -271,7 +272,9 @@ pub fn evaluate_deps_of_potentially_done_updates(
             Ok(o) => o,
             Err(_) => {
                 // we could not resolve the input value (could be a function call for example)
-                // so simply add it to the transitionable resources, and we'll update it and resolve it later
+                // so simply add it to the transitionable resources for now. we'll also add it to a list of errors
+                // so that we can try to resolve them later if they require function call evals for example
+                resources_that_errored.push(current_entry.resource_name.s.clone());
                 transitionable_resources.push(TransitionableResource::Update { state_entry, current_entry });
                 continue;
             }

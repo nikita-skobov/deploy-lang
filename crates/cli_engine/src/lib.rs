@@ -188,10 +188,13 @@ pub struct TrWithTemplate {
 /// or deleted (any state entries that remain that dont have a corresponding resource in the dpl file. these are resources
 /// that were previously created and now must be deleted).
 /// after calling this function, the state's resources will only contain no-op resources whose input has not changed
+/// the second tuple element is a list of resource names that were potentially done updates
+/// but who failed to be resolved. these resource names can be used for further checks
+/// later to see if we can mark them as done without having to update them
 pub fn get_transitionable_resources(
     state: &mut StateFile,
     dpl: &mut DplFile,
-) -> Vec<TransitionableResource> {
+) -> (Vec<TransitionableResource>, Vec<String>) {
     // first collect the known resources that are to be created or updated:
     let mut out = Vec::with_capacity(state.resources.len());
     let mut potentially_done_updates = vec![];
@@ -232,7 +235,9 @@ pub fn get_transitionable_resources(
     }
     // check all of the potentially done updates and for any update that has all of its dependencies already done
     // we can remove it from transitionable updates and mark it as done now
-    dependencies::evaluate_deps_of_potentially_done_updates(potentially_done_updates, &mut done_resources, &mut out);
+    let mut errors = vec![];
+    dependencies::evaluate_deps_of_potentially_done_updates(
+        potentially_done_updates, &mut done_resources, &mut out, &mut errors);
     // now, check all of the resources in the state file that do not have corresponding
     // entry in the current dpl file, these resources are to be deleted:
     for (_, state_entry) in state.resources.drain() {
@@ -242,7 +247,7 @@ pub fn get_transitionable_resources(
     // afterwards, put back all of the resources that had no-op updates into the state
     // such that other resources can look up their outputs:
     state.resources = done_resources;
-    out
+    (out, errors)
 }
 
 /// given a list of resources to be transitioned, check all of their dynamic values
@@ -489,7 +494,7 @@ pub async fn perform_update(
     evaluate_constants(logger, &mut dpl).await?;
     // next, collect resources into create/update/or delete, discarding
     // any resources that dont need to be updated
-    let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
+    let (mut transitionable_resources, _potentially_done_errs) = get_transitionable_resources(&mut state, &mut dpl);
     // add fake resources that will correspond to the output of function calls:
     insert_function_resources(&dpl, &state,&mut transitionable_resources)?;
     // next, ensure every resource can be matched with a template. error otherwise:
@@ -974,7 +979,7 @@ mod test {
             end_line: 0,
         });
         // no prior state for resource 'a' so it should be created:
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Create { .. });
@@ -993,7 +998,7 @@ mod test {
         });
         // no current entry for resource 'a', but state does have a prior entry for resource 'a'
         // so it should be deleted
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Delete { .. });
@@ -1019,7 +1024,7 @@ mod test {
             ..Default::default()
         });
         // a has a prior state, but its input has since changed. it should be updateable
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Update { .. });
@@ -1047,7 +1052,7 @@ mod test {
         // a has a prior state, but its current input is dynamic (has a json path)
         // so it should be considered updateable until its current input can be resolved
         // to an explicit value
-        let mut transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 1);
         let resource = transitionable.pop().unwrap();
         assert_matches!(resource, TransitionableResource::Update { .. });
@@ -1074,7 +1079,7 @@ mod test {
         });
         // a has a prior state, but its last input is the same as its current input
         // therefore it should not be transitionable
-        let transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let (transitionable, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable.len(), 0);
         // it should be in the state still because its treated as "already done"
         assert_matches!(state.resources.get("a"), Some(r) => {
@@ -1126,7 +1131,7 @@ mod test {
             template_name: "t".to_string(),
             ..Default::default()
         });
-        let transitionable = get_transitionable_resources(&mut state, &mut dpl);
+        let (transitionable, _) = get_transitionable_resources(&mut state, &mut dpl);
         let matched = match_resources_with_template(transitionable, &dpl).expect("should not error");
         assert_eq!(matched.len(), 3);
         let mut create_found = false;
@@ -2301,11 +2306,12 @@ resource some_template(B)
 
         // should be empty because resource B depends on A, but A doesnt need to be updated, and therefore
         // its value is the same
-        let trs = get_transitionable_resources(&mut state, &mut dpl);
+        let (trs, errs) = get_transitionable_resources(&mut state, &mut dpl);
         assert!(trs.is_empty());
         // A and B were marked done
         assert!(state.resources.contains_key("A"));
         assert!(state.resources.contains_key("B"));
+        assert_eq!(errs.len(), 0);
     }
 
     #[test]
@@ -2349,12 +2355,13 @@ resource some_template(B)
 
         // should be empty because resource B depends on A, but A doesnt need to be updated, and therefore
         // its value is the same
-        let trs = get_transitionable_resources(&mut state, &mut dpl);
+        let (trs, errs) = get_transitionable_resources(&mut state, &mut dpl);
         assert!(trs.is_empty());
         // A B and C should be marked done
         assert!(state.resources.contains_key("A"));
         assert!(state.resources.contains_key("B"));
         assert!(state.resources.contains_key("C"));
+        assert_eq!(errs.len(), 0);
     }
 
     #[test]
@@ -2410,7 +2417,7 @@ resource some_template(B)
 
         // should be empty because no resource needs to be updated:
         // we were able to evaluate its current input and determining its equal to the last input
-        let trs = get_transitionable_resources(&mut state, &mut dpl);
+        let (trs, errs) = get_transitionable_resources(&mut state, &mut dpl);
         assert!(trs.is_empty());
         // they should be marked done
         assert!(state.resources.contains_key("A"));
@@ -2421,6 +2428,61 @@ resource some_template(B)
         assert!(state.resources.contains_key("F"));
         assert!(state.resources.contains_key("G"));
         assert!(state.resources.contains_key("H"));
+        assert_eq!(errs.len(), 0);
+    }
+
+    #[test]
+    fn get_transitionable_resources_can_report_potentially_done_errors() {
+        // similar situation as get_transitionable_resources_can_check_for_already_done_updates_nested
+        // but this time, the nested resource C passes B to a function call
+        // so C should be reported as a potentially done error
+
+        let document = r#"
+template some_template
+  create
+    echo hello
+
+function javascript(myfunc)
+  return "abc"
+
+resource some_template(C)
+    {"x": $.myfunc['B']}
+
+resource some_template(A)
+    {}
+
+resource some_template(B)
+    {"x": $.A.output}
+"#;
+        let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
+        let mut state = StateFile::default();
+        // A, B, and C were already in state:
+        for resource_name in ["A", "B", "C"] {
+            let mut resource = ResourceInState::default();
+            resource.resource_name = resource_name.to_string();
+            resource.template_name = "some_template".to_string();
+            resource.output = serde_json::json!("hello");
+            if resource_name == "B" || resource_name == "C" {
+                resource.last_input = serde_json::json!({"x": "hello"});
+            } else {
+                resource.last_input = serde_json::json!({});
+            }
+            state.resources.insert(resource_name.to_string(), resource);
+        }
+
+        // should NOT be empty because resource C depends on B, which B is done
+        // but resource C calls a function with B as the input
+        // so its a potentially done error
+        let (trs, potentially_done_errs) = get_transitionable_resources(&mut state, &mut dpl);
+        assert_eq!(trs.len(), 1);
+        assert_eq!(trs[0].get_resource_name(), "C");
+        // A and B should be marked done
+        assert!(state.resources.contains_key("A"));
+        assert!(state.resources.contains_key("B"));
+        assert!(!state.resources.contains_key("C"));
+        // C should be reported as a potentially done error:
+        assert_eq!(potentially_done_errs.len(), 1);
+        assert_eq!(&potentially_done_errs[0], "C");
     }
 
     #[test]
@@ -2460,7 +2522,7 @@ resource some_template(B)
         // to be able to do this comparison.
         // TODO: mini optimization here is before doing the expensive lookup, try to check if
         // B's keys are all the same
-        let mut trs = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut trs, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(trs.len(), 1);
         let resource_b_tr = trs.remove(0);
         assert_eq!(resource_b_tr.get_resource_name(), "B");
@@ -2544,7 +2606,7 @@ resource hello(r1)
 "#;
         let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable_resources, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 1);
         insert_function_resources(&dpl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 1);
@@ -2568,7 +2630,7 @@ resource hello(r1)
 "#;
         let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable_resources, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 2);
         insert_function_resources(&dpl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 3);
@@ -2610,7 +2672,7 @@ resource hello(r1)
             last_input: serde_json::json!({}),
             ..Default::default()
         });
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable_resources, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 1);
         insert_function_resources(&dpl, &state, &mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 2);
@@ -2650,7 +2712,7 @@ resource hello(r2)
         // with the same input resource, then that only creates 1 extra resource
         let mut dpl = deploy_language::parse_and_validate(document).expect("it should be a valid dpl");
         let mut state = StateFile::default();
-        let mut transitionable_resources = get_transitionable_resources(&mut state, &mut dpl);
+        let (mut transitionable_resources, _) = get_transitionable_resources(&mut state, &mut dpl);
         assert_eq!(transitionable_resources.len(), 3);
         insert_function_resources(&dpl, &state,&mut transitionable_resources).unwrap();
         assert_eq!(transitionable_resources.len(), 4);
