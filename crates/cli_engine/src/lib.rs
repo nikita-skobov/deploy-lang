@@ -623,6 +623,20 @@ pub async fn perform_update(
     // process creates/updates first then deletes
     perform_update_batch(logger, &mut state, create_or_updates).await?;
     perform_delete_batch(logger, deletes).await?;
+    // remove all ephemeral resources from state. we had to insert them temporarily
+    // so their dependencies can run from their output shape
+    // but we dont want them in the final state:
+    state.resources.retain(|k, _| {
+        if k.starts_with(FUNCTION_RESOURCE_PREFIX) {
+            return false;
+        }
+        true
+    });
+    // finally, check all dependencies of the state resources and remove any that start with __priv
+    // we dont want those ephemeral dependencies to persist:
+    for (_, resource) in state.resources.iter_mut() {
+        resource.depends_on.retain(|d| !d.starts_with(FUNCTION_RESOURCE_PREFIX));
+    }
     Ok(state)
 }
 
@@ -706,20 +720,6 @@ pub async fn perform_update_batch(
     // if theres any remaining TRs in the batch, error out as the transition cannot be counted a success:
     if !batch.is_empty() {
         return Err(format!("{} resources were not transitioned: {:?}", batch.len(), batch.iter().map(|x| x.tr.get_resource_name()).collect::<Vec<_>>()))
-    }
-    // remove all ephemeral resources from state. we had to insert them temporarily
-    // so their dependencies can run from their output shape
-    // but we dont want them in the final state:
-    state.resources.retain(|k, _| {
-        if k.starts_with(FUNCTION_RESOURCE_PREFIX) {
-            return false;
-        }
-        true
-    });
-    // finally, check all dependencies of the state resources and remove any that start with __priv
-    // we dont want those ephemeral dependencies to persist:
-    for (_, resource) in state.resources.iter_mut() {
-        resource.depends_on.retain(|d| !d.starts_with(FUNCTION_RESOURCE_PREFIX));
     }
     Ok(())
 }
@@ -2696,6 +2696,8 @@ resource some_template(B)
         // the only log is that we called the function
         // which implies we did not update/create any resource A B nor C
         assert_eq!(logs, vec!["calling function 'myfunc(B)'"]);
+        // no ephemeral fn call resources should be added:
+        assert_eq!(state.resources.len(), 3);
     }
 
     #[tokio::test]
