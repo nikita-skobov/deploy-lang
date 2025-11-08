@@ -23,8 +23,10 @@ impl TrAccess for TrWithTemplate {
     }
 }
 
-pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) -> Result<Vec<String>, String> {
-    // TODO: parse and extract just the first segment
+pub fn get_immediate_deps_from_current_entry(
+    current_entry: &ResourceSection,
+    all_resource_names: &[&str],
+) -> Result<Vec<String>, String> {
     let all_json_paths = current_entry.input.get_all_json_paths();
     let num_json_paths = all_json_paths.len();
     let json_paths = all_json_paths
@@ -37,8 +39,15 @@ pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) ->
         let resource_name = jpq.segments.first().ok_or_else(|| {
             format!("json path for resource '{}' does not reference any resource", current_entry.resource_name)
         })?;
+        // if there are exactly 2 segments, pass a Some option indicating
+        // that this may be a function call, in which case the resource
+        // is the 2nd segment
+        let second_segment = match jpq.segments.get(1) {
+            Some(seg) if jpq.segments.len() == 2 => Some(seg),
+            _ => None,
+        };
         let tr_name = current_entry.resource_name.as_str();
-        let resource_name = get_resource_name_from_segment(tr_name, resource_name)?;
+        let resource_name = get_resource_name_from_segment(tr_name, resource_name, second_segment, all_resource_names)?;
         out.push(resource_name);
     }
     Ok(out)
@@ -46,11 +55,14 @@ pub fn get_immediate_deps_from_current_entry(current_entry: &ResourceSection) ->
 
 /// returns a list of dependencies that are immediate: this current resource depends on resource A, B, C, ...
 /// dependencies are other resource names from json paths that are referenced by this current resource in its input json
-pub fn get_immediate_dependencies(current: &TransitionableResource) -> Result<Vec<String>, String> {
+pub fn get_immediate_dependencies(
+    current: &TransitionableResource,
+    all_resource_names: &[&str],
+) -> Result<Vec<String>, String> {
     let mut immediate_deps = match &current {
         TransitionableResource::Create { current_entry } |
         TransitionableResource::Update { current_entry, .. } => {
-            get_immediate_deps_from_current_entry(current_entry)?
+            get_immediate_deps_from_current_entry(current_entry, all_resource_names)?
         }
         TransitionableResource::Delete { state_entry } => state_entry.depends_on.clone(),
     };
@@ -64,9 +76,19 @@ pub fn get_all_transient_dependencies_map<T: TrAccess>(
 ) -> Result<HashMap<String, Vec<String>>, String> {
     // first, collect a map of all immediate dependencies:
     let mut immediate_dep_map = HashMap::with_capacity(trs.len());
+    // collect a list of all known resource names
+    // this will be used to differentiate between function references and resource references
+    let mut all_known_resource_names = Vec::with_capacity(done_resources.len() + trs.len());
     for tr in trs {
         let tr = tr.get_tr();
-        let immediate_deps = get_immediate_dependencies(tr)?;
+        all_known_resource_names.push(tr.get_resource_name());
+    }
+    for resource_name in done_resources.keys() {
+        all_known_resource_names.push(resource_name.as_str());
+    }
+    for tr in trs {
+        let tr = tr.get_tr();
+        let immediate_deps = get_immediate_dependencies(tr, &all_known_resource_names)?;
         immediate_dep_map.insert(tr.get_resource_name().to_string(), immediate_deps);
     }
     // ensure to also add all of the done resources, otherwise some lookups will fail
@@ -96,7 +118,10 @@ pub fn get_delete_order_map(trs: &[TrWithTemplate]) -> Result<HashMap<String, Ve
     let delete_resources_set: HashSet<_> = trs.iter().map(|tr| tr.tr.get_resource_name()).collect();
     let mut out = HashMap::with_capacity(trs.len());
     for tr in trs {
-        let mut immediate_deps = get_immediate_dependencies(&tr.tr)?;
+        // deletions will never need to call functions
+        // so no differentiating between resources and functions is needed
+        // and thus we can pass an empty list of all known resource names
+        let mut immediate_deps = get_immediate_dependencies(&tr.tr, &[])?;
         // for the immediate deps of this resource, remove any that are not in
         // the batch of resources to be deleted:
         immediate_deps.retain(|d| delete_resources_set.contains(d.as_str()));
@@ -212,11 +237,82 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr, &[]).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
         assert_eq!(deps[1], "resourceC");
+    }
+
+    #[test]
+    fn can_get_immediate_dependencies_with_fn_calls() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
+                    // the json path query references a function call
+                    // to function 'myfunc' passing in 'resourceB'
+                    // so the dependency should be on 'resourceB'
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $.myfunc['resourceB']
+                    }"#).unwrap(),
+                    end_line: 0,
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current.tr, &["resourceB"]).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "resourceB");
+    }
+
+    #[test]
+    fn does_not_return_immediate_dependencies_with_fn_call_if_second_segment_isnt_a_resource() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
+                    // the json path query simply has two paths, and the second
+                    // path is not a valid resource
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $.someresource['output']
+                    }"#).unwrap(),
+                    end_line: 0,
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current.tr, &["someresource"]).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "someresource");
+    }
+
+    #[test]
+    fn does_not_return_immediate_dependencies_with_fn_call_if_neither_are_resources() {
+        let current = TrWithTemplate {
+            tr: TransitionableResource::Create {
+                current_entry: ResourceSection {
+                    resource_name: "a".into(),
+                    template_name: "template".into(),
+                    // the json path query simply has two paths, and the second
+                    // path is not a valid resource, so it should return "someresource"
+                    // even though that also is not a known resource
+                    input: json_with_positions::parse_json_value(r#"{
+                        "thing1": $.someresource['output']
+                    }"#).unwrap(),
+                    end_line: 0,
+                },
+            },
+            template: TemplateSection::default(),
+        };
+        let mut deps = get_immediate_dependencies(&current.tr, &[]).expect("it shouldnt error");
+        deps.sort();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "someresource");
     }
 
     #[test]
@@ -235,7 +331,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr, &[]).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
@@ -257,7 +353,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let err = get_immediate_dependencies(&current.tr).expect_err("it should error");
+        let err = get_immediate_dependencies(&current.tr, &[]).expect_err("it should error");
         assert_eq!(err, "json path for resource 'a' must start with a segment selector that references another resource. instead found '0'");
         
         let current = TrWithTemplate {
@@ -273,7 +369,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let err = get_immediate_dependencies(&current.tr).expect_err("it should error");
+        let err = get_immediate_dependencies(&current.tr, &[]).expect_err("it should error");
         assert_eq!(err, "json path for resource 'a' must start with a segment selector that references another resource. instead found '..output'");
     }
 
@@ -300,7 +396,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr, &[]).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");
@@ -319,7 +415,7 @@ mod test {
             },
             template: TemplateSection::default(),
         };
-        let mut deps = get_immediate_dependencies(&current.tr).expect("it shouldnt error");
+        let mut deps = get_immediate_dependencies(&current.tr, &[]).expect("it shouldnt error");
         deps.sort();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0], "resourceB");

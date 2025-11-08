@@ -411,7 +411,9 @@ the following are your options, in order from most recommended to least recommen
 
 pub fn get_resource_name_from_segment(
     current_name: &str,
-    segment: &jsonpath_rust::parser::model::Segment
+    segment: &jsonpath_rust::parser::model::Segment,
+    second_segment: Option<&jsonpath_rust::parser::model::Segment>,
+    all_resource_names: &[&str],
 ) -> Result<String, String> {
     let resource_name = match segment {
         jsonpath_rust::parser::model::Segment::Selector(selector) => match selector {
@@ -424,6 +426,19 @@ pub fn get_resource_name_from_segment(
     // we wish to unquote:
     let mut resource_name = resource_name.to_owned();
     unquote_bracketed_selector(&mut resource_name);
+    if let Some(second_seg) = second_segment {
+        if all_resource_names.iter().all(|rn| *rn != resource_name) {
+            let mut second_seg_name = second_seg.to_string();
+            unquote_bracketed_selector(&mut second_seg_name);
+            if all_resource_names.iter().any(|rn| *rn == second_seg_name) {
+                // the first segment was not a known resource, and we were provided with a second segment
+                // in this case we checked and found the second segment IS a known resource
+                // so this is inferred to be a function call where the first segment is the function name
+                // and the second segment is the resource name
+                return Ok(second_seg_name)
+            }
+        }
+    }
     Ok(resource_name)
 }
 
@@ -762,7 +777,7 @@ pub fn resolve_current_input_value(
         } else {
             jpq.segments.remove(0)
         };
-        let resource_name = get_resource_name_from_segment(current_resource_name, &first_seg)?;
+        let resource_name = get_resource_name_from_segment(current_resource_name, &first_seg, None, &[])?;
         let resource = done_resources.get(&resource_name).ok_or_else(|| format!("cannot create/update resource '{}'. json path references '{}' but this resource does not exist in state", current_resource_name, resource_name))?;
         if current_resource_name.starts_with(FUNCTION_RESOURCE_PREFIX) {
             // this is a function call resource, so dont perform any of the below validation
@@ -782,7 +797,7 @@ pub fn resolve_current_input_value(
         } else {
             jpq.segments.remove(0)
         };
-        let input_or_output = get_resource_name_from_segment(current_resource_name, &next_seg)?;
+        let input_or_output = get_resource_name_from_segment(current_resource_name, &next_seg, None, &[])?;
         let value_to_lookup = match input_or_output.as_str() {
             "input" => &resource.last_input,
             "output" => &resource.output,
